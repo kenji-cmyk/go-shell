@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Go Shell UI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='8' fill='%2300add8'/%3E%3Cpath d='M16 22h32v20H16z' fill='%23003545'/%3E%3Cpath d='M22 29l6 4-6 4' stroke='%235cd4ff' stroke-width='4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M32 39h12' stroke='%2300e639' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">go</div>
+        <div>
+          <div class="brand-name">Go Shell</div>
+          <div class="brand-subtitle">Gopher Terminal</div>
+        </div>
+      </div>
+      <label class="search">
+        <span aria-hidden="true">/</span>
+        <input id="searchInput" type="search" placeholder="Search session output">
+      </label>
+      <div class="top-actions">
+        <button class="icon-button" id="clearButton" type="button" title="Clear terminal" aria-label="Clear terminal">C</button>
+        <button class="icon-button" id="focusButton" type="button" title="Focus command line" aria-label="Focus command line">&gt;</button>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <button class="primary-action" id="newSessionButton" type="button">
+        <span aria-hidden="true">+</span>
+        <span>New Session</span>
+      </button>
+      <nav class="nav-list" aria-label="Workspace">
+        <button class="nav-item active" type="button" data-view="terminal"><span aria-hidden="true">&gt;</span><span>Terminal</span></button>
+        <button class="nav-item" type="button" data-view="jobs"><span aria-hidden="true">#</span><span>Jobs</span></button>
+        <button class="nav-item" type="button" data-view="history"><span aria-hidden="true">H</span><span>History</span></button>
+        <button class="nav-item" type="button" data-view="settings"><span aria-hidden="true">*</span><span>Settings</span></button>
+      </nav>
+      <section class="side-section" aria-labelledby="sessionTitle">
+        <div class="section-label" id="sessionTitle">Session</div>
+        <div class="metric-row"><span>Status</span><strong id="sessionStatus">ready</strong></div>
+        <div class="metric-row"><span>Prompt</span><strong>gosh</strong></div>
+        <div class="metric-row"><span>Encoding</span><strong>UTF-8</strong></div>
+      </section>
+    </aside>
+
+    <main class="workspace">
+      <section class="terminal-panel" aria-label="Terminal session">
+        <div class="tabbar">
+          <div class="window-controls" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div class="tab active"><span aria-hidden="true">&gt;</span><span>~/projects/go-shell</span></div>
+          <button class="icon-button small" id="sampleButton" type="button" title="Run sample command" aria-label="Run sample command">R</button>
+        </div>
+        <div class="terminal-output" id="terminalOutput" role="log" aria-live="polite">
+          <div class="welcome-line">
+            <span class="status-chip success">READY</span>
+            <span>Go Shell UI is connected to the local shell engine.</span>
+          </div>
+        </div>
+        <form class="command-line" id="commandForm">
+          <label class="prompt" for="commandInput">gosh</label>
+          <span class="cwd">~/projects/go-shell &gt;</span>
+          <input id="commandInput" autocomplete="off" spellcheck="false" placeholder="Type a command">
+          <span class="cursor" aria-hidden="true"></span>
+          <button class="run-button" type="submit">Run</button>
+        </form>
+      </section>
+
+      <aside class="inspector" aria-label="Session inspector">
+        <section class="panel-block" id="jobsPanel">
+          <div class="panel-heading">
+            <h2>Jobs</h2>
+            <button class="ghost-button" data-command="jobs" type="button">Refresh</button>
+          </div>
+          <div class="command-list" id="jobsList">
+            <div class="empty-state">No background jobs reported.</div>
+          </div>
+        </section>
+
+        <section class="panel-block">
+          <div class="panel-heading">
+            <h2>Quick Commands</h2>
+          </div>
+          <div class="quick-grid">
+            <button data-command="pwd" type="button">pwd</button>
+            <button data-command="vars" type="button">vars</button>
+            <button data-command="functions" type="button">functions</button>
+            <button data-command="go test ./..." type="button">go test</button>
+          </div>
+        </section>
+
+        <section class="panel-block">
+          <div class="panel-heading">
+            <h2>History</h2>
+            <button class="ghost-button" id="copyHistoryButton" type="button">Copy</button>
+          </div>
+          <ol class="history-list" id="historyList"></ol>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="statusbar">
+      <span id="latencyStatus">0ms</span>
+      <span id="commandCount">0 commands</span>
+      <span>localhost</span>
+      <span>main</span>
+    </footer>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
