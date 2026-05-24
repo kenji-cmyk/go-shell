@@ -5,10 +5,15 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 ## Features
 
 - Interactive read-eval loop with a current-directory prompt.
+- Command history, arrow-key navigation, and tab completion in interactive mode.
 - Parser for whitespace, double-quoted arguments, and escaped quotes.
 - Built-in commands: `cd`, `pwd`, `exit`, `help`, `echo`, `clear`, and `cls`.
 - External command execution with forwarded `stdin`, `stdout`, and `stderr`.
 - CMD fallback for common Windows shell commands: `dir`, `cls`, `copy`, `del`, and `type`.
+- Pipelines with `|`.
+- Input and output redirects with `<`, `>`, and `>>`.
+- Environment variable expansion with `$NAME` and `%NAME%`.
+- Configurable prompt using the `GOSH_PROMPT` environment variable.
 - Unit tests for parser, built-ins, shell flow, and process execution.
 
 ## Run
@@ -25,8 +30,17 @@ go-shell> pwd
 go-shell> cd ..
 projects> dir
 projects> echo "hello world"
+projects> echo "hello" > hello.txt
+projects> type hello.txt | findstr hello
 projects> go version
 projects> exit
+```
+
+Prompt templates can use `{base}` for the current directory name and `{cwd}` for the full current directory:
+
+```powershell
+$env:GOSH_PROMPT = "[{base}]$ "
+go run ./cmd/gosh
 ```
 
 ## Project Structure
@@ -49,7 +63,7 @@ internal/executor external process runner
 
 ## Current Scope
 
-This V1 intentionally keeps the surface area small. It does not support pipelines, redirects, background jobs, wildcard expansion, environment variable expansion, command history, or autocomplete yet.
+This version intentionally keeps job control small. It does not support background jobs, wildcard expansion, advanced quoting rules, or PowerShell-style object pipelines yet.
 
 
 

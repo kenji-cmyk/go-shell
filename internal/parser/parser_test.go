@@ -75,3 +75,50 @@ func TestParseUnclosedQuote(t *testing.T) {
 		t.Fatalf("error = %v, want ErrUnclosedQuote", err)
 	}
 }
+
+func TestParseLinePipeline(t *testing.T) {
+	line, err := ParseLine(`cmd /C echo hello | findstr hello`)
+	if err != nil {
+		t.Fatalf("ParseLine returned error: %v", err)
+	}
+
+	if len(line.Commands) != 2 {
+		t.Fatalf("command count = %d, want 2", len(line.Commands))
+	}
+	if line.Commands[0].Name != "cmd" {
+		t.Fatalf("first command = %q, want cmd", line.Commands[0].Name)
+	}
+	if line.Commands[1].Name != "findstr" {
+		t.Fatalf("second command = %q, want findstr", line.Commands[1].Name)
+	}
+}
+
+func TestParseLineRedirects(t *testing.T) {
+	line, err := ParseLine(`findstr hello < input.txt >> output.txt`)
+	if err != nil {
+		t.Fatalf("ParseLine returned error: %v", err)
+	}
+
+	if line.InputRedirect != "input.txt" {
+		t.Fatalf("InputRedirect = %q, want input.txt", line.InputRedirect)
+	}
+	if line.OutputRedirect != "output.txt" {
+		t.Fatalf("OutputRedirect = %q, want output.txt", line.OutputRedirect)
+	}
+	if !line.AppendOutput {
+		t.Fatal("AppendOutput = false, want true")
+	}
+}
+
+func TestParseLineExpandsEnvironmentVariables(t *testing.T) {
+	t.Setenv("GOSH_TEST_VALUE", "expanded")
+
+	line, err := ParseLine(`echo %GOSH_TEST_VALUE% $GOSH_TEST_VALUE`)
+	if err != nil {
+		t.Fatalf("ParseLine returned error: %v", err)
+	}
+
+	if got := line.Commands[0].Args; len(got) != 2 || got[0] != "expanded" || got[1] != "expanded" {
+		t.Fatalf("Args = %#v, want expanded values", got)
+	}
+}
