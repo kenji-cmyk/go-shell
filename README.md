@@ -41,7 +41,7 @@ Run the browser UI:
 go run ./cmd/gosh-ui
 ```
 
-Then open `http://127.0.0.1:8090`. The UI provides a local terminal surface backed by the same shell engine, with command history, quick commands, jobs output, and status telemetry.
+Then open `http://127.0.0.1:8090`. The UI provides a local terminal surface backed by the same shell engine, with command history, quick commands, jobs output, job controls, history filtering, and workspace settings.
 
 Example session:
 

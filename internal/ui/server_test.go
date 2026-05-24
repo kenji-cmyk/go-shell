@@ -25,6 +25,11 @@ func TestServerServesIndex(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "Go Shell UI") {
 		t.Fatalf("body does not contain UI title")
 	}
+	for _, want := range []string{"Jobs", "History", "Settings"} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("body does not contain %q view", want)
+		}
+	}
 }
 
 func TestServerExecutesCommand(t *testing.T) {
@@ -33,7 +38,7 @@ func TestServerExecutesCommand(t *testing.T) {
 		t.Fatalf("NewServer returned error: %v", err)
 	}
 
-	response := executeRequest(t, server, `{"command":"echo hello-ui"}`)
+	response := executeRequest(t, server, `{"sessionId":"test-a","command":"echo hello-ui"}`)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", response.Code, response.Body.String())
 	}
@@ -53,12 +58,35 @@ func TestServerRejectsEmptyCommand(t *testing.T) {
 		t.Fatalf("NewServer returned error: %v", err)
 	}
 
-	response := executeRequest(t, server, `{"command":"   "}`)
+	response := executeRequest(t, server, `{"sessionId":"test-a","command":"   "}`)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", response.Code)
 	}
 	if !strings.Contains(response.Body.String(), "command is required") {
 		t.Fatalf("body = %q, want validation error", response.Body.String())
+	}
+}
+
+func TestServerKeepsExitedSessionIsolated(t *testing.T) {
+	server, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+
+	firstExit := executeRequest(t, server, `{"sessionId":"closed-tab","command":"exit"}`)
+	if firstExit.Code != http.StatusOK {
+		t.Fatalf("exit status = %d, want 200; body = %s", firstExit.Code, firstExit.Body.String())
+	}
+	sameSession := executeRequest(t, server, `{"sessionId":"closed-tab","command":"echo after-exit"}`)
+	if sameSession.Code != http.StatusBadRequest {
+		t.Fatalf("same session status = %d, want 400", sameSession.Code)
+	}
+	newSession := executeRequest(t, server, `{"sessionId":"fresh-tab","command":"echo fresh"}`)
+	if newSession.Code != http.StatusOK {
+		t.Fatalf("fresh session status = %d, want 200; body = %s", newSession.Code, newSession.Body.String())
+	}
+	if !strings.Contains(newSession.Body.String(), "fresh") {
+		t.Fatalf("fresh session body = %q, want fresh output", newSession.Body.String())
 	}
 }
 

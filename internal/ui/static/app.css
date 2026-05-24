@@ -275,8 +275,15 @@ button {
   overflow: hidden;
 }
 
-.terminal-panel {
+.view-panel {
+  display: none;
+}
+
+.view-panel.active {
   display: grid;
+}
+
+.terminal-panel {
   grid-template-rows: 42px minmax(0, 1fr) 54px;
   min-width: 0;
   min-height: 0;
@@ -286,6 +293,220 @@ button {
   background: rgba(29, 31, 41, 0.62);
   box-shadow: var(--shadow);
   backdrop-filter: blur(12px) saturate(150%);
+}
+
+.detail-panel {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(29, 31, 41, 0.62);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px) saturate(150%);
+}
+
+.detail-header,
+.history-toolbar,
+.job-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.detail-header h1 {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 34px;
+}
+
+.detail-actions,
+.job-actions {
+  display: flex;
+}
+
+.job-board,
+.history-table,
+.settings-grid {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.job-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(61, 72, 78, 0.7);
+  border-radius: 8px;
+  background: rgba(12, 14, 23, 0.55);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.job-card + .job-card {
+  margin-top: 10px;
+}
+
+.job-id {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: rgba(92, 212, 255, 0.12);
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.job-command {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.job-status {
+  color: var(--tertiary);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.job-actions {
+  justify-content: flex-start;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 0;
+  background: rgba(12, 14, 23, 0.35);
+}
+
+.job-actions label,
+.field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.job-actions input,
+.field input {
+  height: 34px;
+  min-width: 110px;
+  border: 1px solid rgba(61, 72, 78, 0.7);
+  border-radius: 8px;
+  background: var(--surface-deep);
+  color: var(--text);
+  padding: 0 10px;
+  outline: 0;
+}
+
+.job-actions button {
+  align-self: end;
+  height: 34px;
+  border: 1px solid rgba(92, 212, 255, 0.45);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.history-toolbar {
+  justify-content: flex-start;
+  border-bottom-color: rgba(255, 255, 255, 0.04);
+}
+
+.history-stat {
+  display: grid;
+  place-items: center;
+  min-width: 90px;
+  height: 52px;
+  border: 1px solid rgba(61, 72, 78, 0.55);
+  border-radius: 8px;
+  background: rgba(12, 14, 23, 0.35);
+}
+
+.history-stat strong {
+  color: var(--primary);
+  font-family: var(--mono);
+}
+
+.history-stat span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.history-table {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  margin: 0;
+  list-style: none;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(61, 72, 78, 0.55);
+  border-radius: 8px;
+  background: rgba(12, 14, 23, 0.45);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.history-command {
+  overflow-wrap: anywhere;
+}
+
+.settings-grid {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 76px;
+  padding: 14px;
+  border: 1px solid rgba(61, 72, 78, 0.55);
+  border-radius: 8px;
+  background: rgba(12, 14, 23, 0.45);
+}
+
+.setting-row strong {
+  display: block;
+  color: var(--text);
+}
+
+.setting-row small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.setting-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary-strong);
+}
+
+body.compact-output .entry {
+  margin-top: 10px;
+}
+
+body.compact-output .terminal-output {
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .tabbar {
@@ -626,6 +847,19 @@ button {
   .inspector {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto auto;
+  }
+
+  .detail-header,
+  .history-toolbar,
+  .job-actions,
+  .setting-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .history-row,
+  .job-card {
+    grid-template-columns: 1fr;
   }
 
   .sidebar {

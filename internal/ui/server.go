@@ -20,8 +20,9 @@ var staticFiles embed.FS
 const maxCommandBytes = 16 * 1024
 
 type Server struct {
-	mux     *http.ServeMux
-	session *Session
+	mux      *http.ServeMux
+	mu       sync.Mutex
+	sessions map[string]*Session
 }
 
 type Session struct {
@@ -33,7 +34,8 @@ type Session struct {
 }
 
 type ExecuteRequest struct {
-	Command string `json:"command"`
+	SessionID string `json:"sessionId"`
+	Command   string `json:"command"`
 }
 
 type ExecuteResponse struct {
@@ -56,8 +58,8 @@ func NewServer() (*Server, error) {
 	}
 
 	server := &Server{
-		mux:     http.NewServeMux(),
-		session: NewSession(),
+		mux:      http.NewServeMux(),
+		sessions: make(map[string]*Session),
 	}
 	server.mux.Handle("GET /", http.FileServer(http.FS(static)))
 	server.mux.HandleFunc("POST /api/execute", server.handleExecute)
@@ -88,12 +90,43 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := s.session.Execute(request.Command)
+	session, err := s.session(request.SessionID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	response := session.Execute(request.Command)
 	status := http.StatusOK
 	if !response.OK {
 		status = http.StatusBadRequest
 	}
 	writeJSON(w, status, response)
+}
+
+func (s *Server) session(id string) (*Session, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		id = "default"
+	}
+	if len(id) > 128 {
+		return nil, fmt.Errorf("session id is too large")
+	}
+	for _, r := range id {
+		if r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+			continue
+		}
+		return nil, fmt.Errorf("session id contains invalid characters")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[id]
+	if !ok {
+		session = NewSession()
+		s.sessions[id] = session
+	}
+	return session, nil
 }
 
 func (s *Session) Execute(command string) ExecuteResponse {

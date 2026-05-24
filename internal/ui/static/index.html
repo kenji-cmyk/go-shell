@@ -33,10 +33,10 @@
         <span>New Session</span>
       </button>
       <nav class="nav-list" aria-label="Workspace">
-        <button class="nav-item active" type="button" data-view="terminal"><span aria-hidden="true">&gt;</span><span>Terminal</span></button>
-        <button class="nav-item" type="button" data-view="jobs"><span aria-hidden="true">#</span><span>Jobs</span></button>
-        <button class="nav-item" type="button" data-view="history"><span aria-hidden="true">H</span><span>History</span></button>
-        <button class="nav-item" type="button" data-view="settings"><span aria-hidden="true">*</span><span>Settings</span></button>
+        <button class="nav-item active" type="button" data-view-target="terminal"><span aria-hidden="true">&gt;</span><span>Terminal</span></button>
+        <button class="nav-item" type="button" data-view-target="jobs"><span aria-hidden="true">#</span><span>Jobs</span></button>
+        <button class="nav-item" type="button" data-view-target="history"><span aria-hidden="true">H</span><span>History</span></button>
+        <button class="nav-item" type="button" data-view-target="settings"><span aria-hidden="true">*</span><span>Settings</span></button>
       </nav>
       <section class="side-section" aria-labelledby="sessionTitle">
         <div class="section-label" id="sessionTitle">Session</div>
@@ -47,7 +47,7 @@
     </aside>
 
     <main class="workspace">
-      <section class="terminal-panel" aria-label="Terminal session">
+      <section class="terminal-panel view-panel active" data-view="terminal" aria-label="Terminal session">
         <div class="tabbar">
           <div class="window-controls" aria-hidden="true"><span></span><span></span><span></span></div>
           <div class="tab active"><span aria-hidden="true">&gt;</span><span>~/projects/go-shell</span></div>
@@ -66,6 +66,83 @@
           <span class="cursor" aria-hidden="true"></span>
           <button class="run-button" type="submit">Run</button>
         </form>
+      </section>
+
+      <section class="detail-panel view-panel" data-view="jobs" aria-label="Jobs workspace">
+        <div class="detail-header">
+          <div>
+            <p class="section-label">Process Control</p>
+            <h1>Jobs</h1>
+          </div>
+          <button class="ghost-button" data-command="jobs" type="button">Refresh Jobs</button>
+        </div>
+        <div class="job-board" id="jobsBoard">
+          <div class="empty-state">Run `jobs` or start a command with `&` to populate this board.</div>
+        </div>
+        <div class="job-actions">
+          <label>
+            <span>Job ID</span>
+            <input id="jobIdInput" inputmode="numeric" placeholder="1">
+          </label>
+          <button data-job-action="fg" type="button">Foreground</button>
+          <button data-job-action="bg" type="button">Background</button>
+          <button data-job-action="stop" type="button">Stop</button>
+        </div>
+      </section>
+
+      <section class="detail-panel view-panel" data-view="history" aria-label="History workspace">
+        <div class="detail-header">
+          <div>
+            <p class="section-label">Command Audit</p>
+            <h1>History</h1>
+          </div>
+          <div class="detail-actions">
+            <button class="ghost-button" id="clearHistoryButton" type="button">Clear</button>
+            <button class="ghost-button" id="copyHistoryButton" type="button">Copy</button>
+          </div>
+        </div>
+        <div class="history-toolbar">
+          <label class="field">
+            <span>Filter</span>
+            <input id="historyFilterInput" placeholder="command text">
+          </label>
+          <div class="history-stat"><strong id="historyTotal">0</strong><span>commands</span></div>
+          <div class="history-stat"><strong id="historyFailed">0</strong><span>errors</span></div>
+        </div>
+        <ol class="history-table" id="historyTable"></ol>
+      </section>
+
+      <section class="detail-panel view-panel" data-view="settings" aria-label="Settings workspace">
+        <div class="detail-header">
+          <div>
+            <p class="section-label">Workspace Preferences</p>
+            <h1>Settings</h1>
+          </div>
+          <button class="ghost-button" id="resetSettingsButton" type="button">Reset</button>
+        </div>
+        <div class="settings-grid">
+          <label class="setting-row">
+            <span>
+              <strong>Compact terminal output</strong>
+              <small>Reduces vertical spacing in command results.</small>
+            </span>
+            <input id="compactToggle" type="checkbox">
+          </label>
+          <label class="setting-row">
+            <span>
+              <strong>Echo command errors</strong>
+              <small>Keep stderr visible in the terminal stream.</small>
+            </span>
+            <input id="errorToggle" type="checkbox" checked>
+          </label>
+          <label class="setting-row">
+            <span>
+              <strong>Auto-refresh jobs after commands</strong>
+              <small>Runs `jobs` after each successful command.</small>
+            </span>
+            <input id="autoJobsToggle" type="checkbox">
+          </label>
+        </div>
       </section>
 
       <aside class="inspector" aria-label="Session inspector">
@@ -94,7 +171,7 @@
         <section class="panel-block">
           <div class="panel-heading">
             <h2>History</h2>
-            <button class="ghost-button" id="copyHistoryButton" type="button">Copy</button>
+            <button class="ghost-button" id="copyHistorySideButton" type="button">Copy</button>
           </div>
           <ol class="history-list" id="historyList"></ol>
         </section>
