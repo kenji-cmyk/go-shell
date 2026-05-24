@@ -157,6 +157,22 @@ func TestParseLineExpandsEnvironmentVariables(t *testing.T) {
 	}
 }
 
+func TestParseLineWithEnvUsesCustomLookup(t *testing.T) {
+	line, err := ParseLineWithEnv(`echo $GOSH_TEST_VALUE %GOSH_TEST_VALUE%`, func(name string) (string, bool) {
+		if name == "GOSH_TEST_VALUE" {
+			return "custom", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("ParseLineWithEnv returned error: %v", err)
+	}
+
+	if got := line.Commands[0].Args; len(got) != 2 || got[0] != "custom" || got[1] != "custom" {
+		t.Fatalf("Args = %#v, want custom values", got)
+	}
+}
+
 func TestParseLineBackground(t *testing.T) {
 	line, err := ParseLine(`notepad &`)
 	if err != nil {

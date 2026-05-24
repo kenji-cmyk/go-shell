@@ -193,3 +193,79 @@ func TestFgBuiltinWaitsForJob(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", errOut.String())
 	}
 }
+
+func TestShellVariablesOverrideEnvironmentExpansion(t *testing.T) {
+	t.Setenv("GOSH_COLOR", "env-blue")
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &out, &errOut)
+
+	if !sh.ExecuteLine("set GOSH_COLOR=shell-green") {
+		t.Fatal("set stopped shell")
+	}
+	if !sh.ExecuteLine("echo $GOSH_COLOR %GOSH_COLOR%") {
+		t.Fatal("echo stopped shell")
+	}
+	if strings.TrimSpace(out.String()) != "shell-green shell-green" {
+		t.Fatalf("stdout = %q, want shell variable values", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestShellVariablesCanBeUnset(t *testing.T) {
+	t.Setenv("GOSH_MODE", "from-env")
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &out, &errOut)
+
+	sh.ExecuteLine("set GOSH_MODE=from-shell")
+	sh.ExecuteLine("unset GOSH_MODE")
+	if !sh.ExecuteLine("echo $GOSH_MODE") {
+		t.Fatal("echo stopped shell")
+	}
+	if strings.TrimSpace(out.String()) != "from-env" {
+		t.Fatalf("stdout = %q, want env fallback after unset", out.String())
+	}
+}
+
+func TestScriptFunctionExpandsArguments(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &out, &errOut)
+
+	if !sh.ExecuteLine("fn greet = echo hello $1 from $@") {
+		t.Fatal("fn stopped shell")
+	}
+	if !sh.ExecuteLine("greet world gosh") {
+		t.Fatal("function invocation stopped shell")
+	}
+	if strings.TrimSpace(out.String()) != "hello world from world gosh" {
+		t.Fatalf("stdout = %q, want function output", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestStartupScriptCanDefineFunctionAndVariable(t *testing.T) {
+	t.Setenv("GOSH_STARTUP", "set TARGET=gosh;fn greet = echo hi $TARGET;greet")
+	t.Setenv("GOSH_STARTUP_FILE", filepath.Join(t.TempDir(), "missing-startup"))
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader("exit\n"), &out, &errOut)
+
+	if err := sh.Run(); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(out.String(), "hi gosh") {
+		t.Fatalf("stdout = %q, want startup function output", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}

@@ -59,6 +59,10 @@ func Parse(input string) (Command, error) {
 }
 
 func ParseLine(input string) (Line, error) {
+	return ParseLineWithEnv(input, lookupOSEnv)
+}
+
+func ParseLineWithEnv(input string, lookup func(string) (string, bool)) (Line, error) {
 	raw := strings.TrimSpace(input)
 	if raw == "" {
 		return Line{}, nil
@@ -80,7 +84,7 @@ func ParseLine(input string) (Line, error) {
 			return syntaxError("empty command", 1)
 		}
 		values := tokenValues(current)
-		expanded := expandTokens(values)
+		expanded := expandTokens(values, lookup)
 		line.Commands = append(line.Commands, Command{
 			Name: expanded[0],
 			Args: expanded[1:],
@@ -102,13 +106,13 @@ func ParseLine(input string) (Line, error) {
 			if i >= len(tokens) || isOperator(tokens[i].value) {
 				return Line{}, syntaxError("missing input file", token.column)
 			}
-			line.InputRedirect = expandToken(tokens[i].value)
+			line.InputRedirect = expandToken(tokens[i].value, lookup)
 		case ">", ">>":
 			i++
 			if i >= len(tokens) || isOperator(tokens[i].value) {
 				return Line{}, syntaxError("missing output file", token.column)
 			}
-			line.OutputRedirect = expandToken(tokens[i].value)
+			line.OutputRedirect = expandToken(tokens[i].value, lookup)
 			line.AppendOutput = token.value == ">>"
 		case "&":
 			if i != len(tokens)-1 {
@@ -250,19 +254,22 @@ func tokenValues(tokens []token) []string {
 	return values
 }
 
-func expandTokens(tokens []string) []string {
+func expandTokens(tokens []string, lookup func(string) (string, bool)) []string {
 	expanded := make([]string, len(tokens))
 	for i, token := range tokens {
-		expanded[i] = expandToken(token)
+		expanded[i] = expandToken(token, lookup)
 	}
 	return expanded
 }
 
-func expandToken(token string) string {
-	return expandWindowsEnv(os.ExpandEnv(token))
+func expandToken(token string, lookup func(string) (string, bool)) string {
+	return expandWindowsEnv(os.Expand(token, func(name string) string {
+		value, _ := lookup(name)
+		return value
+	}), lookup)
 }
 
-func expandWindowsEnv(token string) string {
+func expandWindowsEnv(token string, lookup func(string) (string, bool)) string {
 	var out strings.Builder
 	for i := 0; i < len(token); i++ {
 		if token[i] != '%' {
@@ -277,10 +284,15 @@ func expandWindowsEnv(token string) string {
 		}
 
 		name := token[i+1 : i+1+end]
-		out.WriteString(os.Getenv(name))
+		value, _ := lookup(name)
+		out.WriteString(value)
 		i += end + 1
 	}
 	return out.String()
+}
+
+func lookupOSEnv(name string) (string, bool) {
+	return os.LookupEnv(name)
 }
 
 func FormatError(input string, err error) string {

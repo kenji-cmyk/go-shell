@@ -27,10 +27,13 @@ type Shell struct {
 	executor       executor.Executor
 	promptTemplate string
 	aliases        map[string]string
+	variables      map[string]string
+	functions      map[string]string
 	jobs           *executor.JobTable
 	lastStatus     int
 	lastDuration   time.Duration
 	started        bool
+	functionDepth  int
 }
 
 func New(in io.Reader, out io.Writer, errOut io.Writer) *Shell {
@@ -44,6 +47,8 @@ func New(in io.Reader, out io.Writer, errOut io.Writer) *Shell {
 		executor:       executor.Executor{In: in, Out: out, Err: errOut, Jobs: jobs},
 		promptTemplate: promptFormat(),
 		aliases:        aliases,
+		variables:      make(map[string]string),
+		functions:      make(map[string]string),
 		jobs:           jobs,
 	}
 }
@@ -124,7 +129,7 @@ func (s *Shell) ExecuteLine(line string) bool {
 		s.lastDuration = time.Since(start)
 	}()
 
-	parsed, err := parser.ParseLine(line)
+	parsed, err := parser.ParseLineWithEnv(line, s.lookupEnv)
 	if err != nil {
 		status = 2
 		fmt.Fprintln(s.err, parser.FormatError(line, err))
@@ -142,6 +147,18 @@ func (s *Shell) ExecuteLine(line string) bool {
 
 	if len(parsed.Commands) == 1 && !parsed.Background && parsed.InputRedirect == "" {
 		cmd := parsed.Commands[0]
+		if handled, ok := s.runStateCommand(cmd); handled {
+			if !ok {
+				status = 1
+			}
+			return true
+		}
+		if handled, ok := s.runFunction(cmd); handled {
+			if !ok {
+				status = 1
+			}
+			return true
+		}
 		if handled, keepRunning := s.runJobCommand(cmd); handled {
 			if !keepRunning {
 				status = 1
@@ -421,7 +438,10 @@ func loadAliasPairs(aliases map[string]string, content string, separator string)
 
 func (s *Shell) commandNames() []string {
 	names := append([]string{}, s.builtins.Names()...)
-	names = append(names, "jobs", "fg", "bg")
+	names = append(names, "jobs", "fg", "bg", "set", "unset", "vars", "fn", "unfn", "functions")
+	for name := range s.functions {
+		names = append(names, name)
+	}
 	sort.Strings(names)
 	return names
 }

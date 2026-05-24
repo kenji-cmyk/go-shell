@@ -20,9 +20,11 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Syntax errors with column positions and caret hints.
 - Configurable aliases using `GOSH_ALIASES` or an aliases config file.
 - Configurable startup scripts using `GOSH_STARTUP` or `GOSH_STARTUP_FILE`.
+- Reusable shell variables with `set`, `unset`, and `vars`.
+- One-line script functions with `fn`, `unfn`, and `functions`.
 - Prompt status and timing placeholders with `{status}` and `{duration}`.
 - Cross-platform `clear` behavior.
-- Unit tests for parser, built-ins, shell flow, and process execution.
+- Unit and integration tests for parser, built-ins, shell flow, process execution, and scripted CLI input.
 
 ## Run
 
@@ -76,6 +78,24 @@ $env:GOSH_STARTUP_FILE = "C:\Users\you\.config\gosh\startup.gosh"
 go run ./cmd/gosh
 ```
 
+Reusable shell variables override OS environment variables during command expansion without modifying the parent environment:
+
+```text
+set TARGET=gosh
+echo $TARGET
+unset TARGET
+vars
+```
+
+One-line functions can be defined in an interactive session or startup script. Function arguments are available as `$1`, `$2`, `$@`, and `$#`:
+
+```text
+fn greet = echo hello $1 from $@
+greet world gosh
+functions
+unfn greet
+```
+
 ## Project Structure
 
 ```text
@@ -102,6 +122,3 @@ This version intentionally keeps job control small. It can list jobs and wait on
 
 - Add stopped-job support and real process resume semantics where the OS allows it.
 - Add signal forwarding and Ctrl+C process-group handling.
-- Add script functions and reusable shell variables.
-- Add a small integration test harness for interactive terminal behavior.
-
