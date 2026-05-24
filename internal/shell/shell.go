@@ -54,6 +54,10 @@ func New(in io.Reader, out io.Writer, errOut io.Writer) *Shell {
 }
 
 func (s *Shell) Run() error {
+	signals, stopSignals := executor.NewSignalChannel()
+	defer stopSignals()
+	s.executor.Signals = signals
+
 	s.runStartupScripts()
 	if s.isInteractive() {
 		return s.runInteractive()
@@ -210,7 +214,23 @@ func (s *Shell) runJobCommand(cmd parser.Command) (bool, bool) {
 			fmt.Fprintln(s.err, err)
 			return true, false
 		}
-		job, err := s.jobs.Wait(id)
+		job, ok := s.jobs.Get(id)
+		if !ok {
+			fmt.Fprintf(s.err, "fg: job %d not found\n", id)
+			return true, false
+		}
+		if job.Status == executor.JobStopped {
+			if err := executor.ResumeJob(job); err != nil {
+				fmt.Fprintln(s.err, "fg:", err)
+				return true, false
+			}
+			if err := s.jobs.MarkRunning(id); err != nil {
+				fmt.Fprintln(s.err, "fg:", err)
+				return true, false
+			}
+			fmt.Fprintf(s.out, "[%d] running %s\n", job.ID, job.Command)
+		}
+		job, err = s.jobs.Wait(id)
 		if err != nil {
 			fmt.Fprintln(s.err, "fg:", err)
 			return true, false
@@ -238,9 +258,44 @@ func (s *Shell) runJobCommand(cmd parser.Command) (bool, bool) {
 		}
 		if job.Status == executor.JobRunning {
 			fmt.Fprintf(s.out, "[%d] already running %s\n", job.ID, job.Command)
+		} else if job.Status == executor.JobStopped {
+			if err := executor.ResumeJob(job); err != nil {
+				fmt.Fprintln(s.err, "bg:", err)
+				return true, false
+			}
+			if err := s.jobs.MarkRunning(id); err != nil {
+				fmt.Fprintln(s.err, "bg:", err)
+				return true, false
+			}
+			fmt.Fprintf(s.out, "[%d] running %s\n", job.ID, job.Command)
 		} else {
 			fmt.Fprintf(s.out, "[%d] %s %s\n", job.ID, job.Status, job.Command)
 		}
+		return true, true
+	case "stop":
+		if len(cmd.Args) != 1 {
+			fmt.Fprintln(s.err, "stop: usage: stop <job-id>")
+			return true, false
+		}
+		id, err := parseJobID(cmd.Args[0])
+		if err != nil {
+			fmt.Fprintln(s.err, err)
+			return true, false
+		}
+		job, ok := s.jobs.Get(id)
+		if !ok {
+			fmt.Fprintf(s.err, "stop: job %d not found\n", id)
+			return true, false
+		}
+		if err := executor.StopJob(job); err != nil {
+			fmt.Fprintln(s.err, "stop:", err)
+			return true, false
+		}
+		if err := s.jobs.MarkStopped(id); err != nil {
+			fmt.Fprintln(s.err, "stop:", err)
+			return true, false
+		}
+		fmt.Fprintf(s.out, "[%d] stopped %s\n", job.ID, job.Command)
 		return true, true
 	default:
 		return false, true
@@ -438,7 +493,7 @@ func loadAliasPairs(aliases map[string]string, content string, separator string)
 
 func (s *Shell) commandNames() []string {
 	names := append([]string{}, s.builtins.Names()...)
-	names = append(names, "jobs", "fg", "bg", "set", "unset", "vars", "fn", "unfn", "functions")
+	names = append(names, "jobs", "fg", "bg", "stop", "set", "unset", "vars", "fn", "unfn", "functions")
 	for name := range s.functions {
 		names = append(names, name)
 	}

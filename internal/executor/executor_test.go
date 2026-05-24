@@ -2,10 +2,13 @@ package executor
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"go-shell/internal/parser"
 )
@@ -137,7 +140,7 @@ func TestRunLineBackgroundReturnsImmediately(t *testing.T) {
 	var out bytes.Buffer
 	exec := Executor{Out: &out, Err: &bytes.Buffer{}}
 
-	line, err := parser.ParseLine(`cmd /C rem background &`)
+	line, err := parser.ParseLine(`cmd /C rem background > NUL &`)
 	if err != nil {
 		t.Fatalf("ParseLine returned error: %v", err)
 	}
@@ -147,5 +150,77 @@ func TestRunLineBackgroundReturnsImmediately(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "[background]") {
 		t.Fatalf("output = %q, want background job notice", out.String())
+	}
+}
+
+func TestRunLineForwardsInterruptToForegroundProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows console control events are not reliable under go test")
+	}
+
+	signals := make(chan os.Signal, 1)
+	exec := Executor{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Signals: signals}
+	line, err := parser.ParseLine(`cmd /C ping 127.0.0.1 -n 6 > NUL`)
+	if err != nil {
+		t.Fatalf("ParseLine returned error: %v", err)
+	}
+
+	errs := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		errs <- exec.RunLine(line)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	signals <- os.Interrupt
+
+	select {
+	case <-errs:
+		if time.Since(start) > 4*time.Second {
+			t.Fatal("foreground process did not stop promptly after interrupt")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("foreground process did not receive forwarded interrupt")
+	}
+}
+
+func TestJobTableCanMarkStoppedAndResume(t *testing.T) {
+	jobs := NewJobTable()
+	job := jobs.Add("demo", nil)
+
+	if err := jobs.MarkStopped(job.ID); err != nil {
+		t.Fatalf("MarkStopped returned error: %v", err)
+	}
+	stopped, ok := jobs.Get(job.ID)
+	if !ok {
+		t.Fatal("job not found")
+	}
+	if stopped.Status != JobStopped {
+		t.Fatalf("status = %q, want stopped", stopped.Status)
+	}
+
+	if err := jobs.MarkRunning(job.ID); err != nil {
+		t.Fatalf("MarkRunning returned error: %v", err)
+	}
+	running, ok := jobs.Get(job.ID)
+	if !ok {
+		t.Fatal("job not found after resume")
+	}
+	if running.Status != JobRunning {
+		t.Fatalf("status = %q, want running", running.Status)
+	}
+}
+
+func TestJobTableResumeDoneJobReturnsError(t *testing.T) {
+	jobs := NewJobTable()
+	job := jobs.Add("demo", nil)
+	jobs.Complete(job.ID, nil)
+
+	err := jobs.MarkRunning(job.ID)
+	if err == nil {
+		t.Fatal("MarkRunning returned nil error for done job")
+	}
+	if !errors.Is(err, ErrJobNotStopped) {
+		t.Fatalf("error = %v, want ErrJobNotStopped", err)
 	}
 }

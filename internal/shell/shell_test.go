@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go-shell/internal/executor"
 )
 
 func TestExecuteLineHandlesEmptyInput(t *testing.T) {
@@ -267,5 +269,30 @@ func TestStartupScriptCanDefineFunctionAndVariable(t *testing.T) {
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestStopBuiltinMarksJobStoppedWhenSupported(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &out, &errOut)
+
+	sh.ExecuteLine("cmd /C ping 127.0.0.1 -n 2 > NUL &")
+	if !sh.ExecuteLine("stop 1") {
+		t.Fatal("stop stopped shell")
+	}
+
+	if executor.SupportsJobStop() {
+		if !strings.Contains(out.String(), "[1] stopped") {
+			t.Fatalf("stdout = %q, want stopped job", out.String())
+		}
+		if errOut.Len() != 0 {
+			t.Fatalf("stderr = %q, want empty", errOut.String())
+		}
+		return
+	}
+
+	if !strings.Contains(errOut.String(), "not supported") {
+		t.Fatalf("stderr = %q, want unsupported stop message", errOut.String())
 	}
 }

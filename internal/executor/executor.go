@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,16 +16,20 @@ import (
 )
 
 type Executor struct {
-	In   io.Reader
-	Out  io.Writer
-	Err  io.Writer
-	Jobs *JobTable
+	In      io.Reader
+	Out     io.Writer
+	Err     io.Writer
+	Jobs    *JobTable
+	Signals <-chan os.Signal
 }
+
+var ErrJobNotStopped = errors.New("job is not stopped")
 
 type JobStatus string
 
 const (
 	JobRunning JobStatus = "running"
+	JobStopped JobStatus = "stopped"
 	JobDone    JobStatus = "done"
 	JobFailed  JobStatus = "failed"
 )
@@ -33,6 +38,7 @@ type Job struct {
 	ID       int
 	Command  string
 	PIDs     []int
+	PGIDs    []int
 	Status   JobStatus
 	Err      error
 	Started  time.Time
@@ -44,6 +50,7 @@ type JobSnapshot struct {
 	ID       int
 	Command  string
 	PIDs     []int
+	PGIDs    []int
 	Status   JobStatus
 	Err      error
 	Started  time.Time
@@ -68,9 +75,13 @@ func (t *JobTable) Add(command string, processes []*exec.Cmd) *JobSnapshot {
 	defer t.mu.Unlock()
 
 	pids := make([]int, 0, len(processes))
+	pgids := make([]int, 0, len(processes))
 	for _, process := range processes {
 		if process.Process != nil {
 			pids = append(pids, process.Process.Pid)
+			if pgid := processGroupID(process); pgid > 0 {
+				pgids = append(pgids, pgid)
+			}
 		}
 	}
 
@@ -78,6 +89,7 @@ func (t *JobTable) Add(command string, processes []*exec.Cmd) *JobSnapshot {
 		ID:      t.nextID,
 		Command: command,
 		PIDs:    pids,
+		PGIDs:   pgids,
 		Status:  JobRunning,
 		Started: time.Now(),
 		done:    make(chan struct{}),
@@ -105,6 +117,36 @@ func (t *JobTable) Complete(id int, err error) {
 	job.Finished = time.Now()
 	close(job.done)
 	t.mu.Unlock()
+}
+
+func (t *JobTable) MarkStopped(id int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	job, ok := t.jobs[id]
+	if !ok {
+		return fmt.Errorf("job %d not found", id)
+	}
+	if job.Status != JobRunning {
+		return fmt.Errorf("%w: %s", ErrJobNotStopped, job.Status)
+	}
+	job.Status = JobStopped
+	return nil
+}
+
+func (t *JobTable) MarkRunning(id int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	job, ok := t.jobs[id]
+	if !ok {
+		return fmt.Errorf("job %d not found", id)
+	}
+	if job.Status != JobStopped {
+		return fmt.Errorf("%w: %s", ErrJobNotStopped, job.Status)
+	}
+	job.Status = JobRunning
+	return nil
 }
 
 func (t *JobTable) List() []JobSnapshot {
@@ -153,6 +195,7 @@ func (j *Job) snapshot() JobSnapshot {
 		ID:       j.ID,
 		Command:  j.Command,
 		PIDs:     append([]int(nil), j.PIDs...),
+		PGIDs:    append([]int(nil), j.PGIDs...),
 		Status:   j.Status,
 		Err:      j.Err,
 		Started:  j.Started,
@@ -166,19 +209,20 @@ func (e Executor) Run(cmd parser.Command) error {
 	}
 
 	process := commandProcess(cmd)
+	prepareCommand(process, true)
 
 	process.Stdin = e.In
 	process.Stdout = e.Out
 	process.Stderr = e.Err
 
-	if err := process.Run(); err != nil {
+	if err := process.Start(); err != nil {
 		var notFound *exec.Error
 		if errors.As(err, &notFound) && errors.Is(notFound.Err, exec.ErrNotFound) {
 			return fmt.Errorf("%s: command not found", cmd.Name)
 		}
 		return err
 	}
-	return nil
+	return e.waitForeground(cmd.Raw, []*exec.Cmd{process}, nil, nil)
 }
 
 func (e Executor) RunLine(line parser.Line) error {
@@ -223,6 +267,7 @@ func (e Executor) RunLine(line parser.Line) error {
 	processes := make([]*exec.Cmd, len(line.Commands))
 	for i, command := range line.Commands {
 		processes[i] = commandProcess(command)
+		prepareCommand(processes[i], true)
 		processes[i].Stderr = e.Err
 	}
 
@@ -275,7 +320,58 @@ func (e Executor) RunLine(line parser.Line) error {
 	}
 
 	defer closeFiles()
-	return waitProcesses(processes, readers, writers)
+	return e.waitForeground(line.Raw, processes, readers, writers)
+}
+
+func (e Executor) waitForeground(command string, processes []*exec.Cmd, readers []*io.PipeReader, writers []*io.PipeWriter) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- waitProcesses(processes, readers, writers)
+	}()
+
+	for {
+		select {
+		case err := <-done:
+			return err
+		case sig, ok := <-e.Signals:
+			if !ok {
+				e.Signals = nil
+				continue
+			}
+			forwardSignal(processes, sig)
+			if isStopSignal(sig) {
+				if e.Jobs != nil {
+					job := e.Jobs.Add(command, processes)
+					_ = e.Jobs.MarkStopped(job.ID)
+					fmt.Fprintf(e.Out, "\n[%d] stopped %s\n", job.ID, job.Command)
+				}
+				return nil
+			}
+		}
+	}
+}
+
+func NewSignalChannel() (<-chan os.Signal, func()) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, forwardedSignals()...)
+	return signals, func() {
+		signal.Stop(signals)
+		close(signals)
+	}
+}
+
+func StopJob(job JobSnapshot) error {
+	if job.Status != JobRunning {
+		return fmt.Errorf("%w: %s", ErrJobNotStopped, job.Status)
+	}
+	return stopJob(job)
+}
+
+func ResumeJob(job JobSnapshot) error {
+	if job.Status != JobStopped {
+		return fmt.Errorf("%w: %s", ErrJobNotStopped, job.Status)
+	}
+	return resumeJob(job)
 }
 
 func waitProcesses(processes []*exec.Cmd, readers []*io.PipeReader, writers []*io.PipeWriter) error {

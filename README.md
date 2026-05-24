@@ -16,6 +16,8 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Configurable prompt using the `GOSH_PROMPT` environment variable.
 - Background jobs with `&`.
 - Job listing and foreground/background commands with `jobs`, `fg`, and `bg`.
+- Stopped-job state with `stop`, plus `bg`/`fg` resume semantics on OSes that support process suspension.
+- Foreground process signal forwarding for Ctrl+C/process interrupts.
 - Wildcard expansion for external command arguments.
 - Syntax errors with column positions and caret hints.
 - Configurable aliases using `GOSH_ALIASES` or an aliases config file.
@@ -44,6 +46,8 @@ projects> echo "hello" > hello.txt
 projects> type hello.txt | findstr hello
 projects> notepad &
 projects> jobs
+projects> stop 1
+projects> bg 1
 projects> fg 1
 projects> go version
 projects> exit
@@ -116,9 +120,8 @@ internal/executor external process runner
 
 ## Current Scope
 
-This version intentionally keeps job control small. It can list jobs and wait on background jobs with `fg`, while `bg` reports already-running jobs; it does not yet include stopped-job resume semantics, signal forwarding, or PowerShell-style object pipelines.
+This version keeps job control intentionally small. It tracks background jobs, can stop and resume jobs where the host OS supports process suspension, and forwards foreground interrupts to child process groups. Windows supports foreground interrupt forwarding with console control events, but stopped-job suspension/resume is reported as unsupported because Windows does not expose POSIX-style `SIGSTOP`/`SIGCONT` semantics.
 
 ## Roadmap
 
-- Add stopped-job support and real process resume semantics where the OS allows it.
-- Add signal forwarding and Ctrl+C process-group handling.
+- Build a UI for the shell system.
