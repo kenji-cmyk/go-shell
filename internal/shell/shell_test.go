@@ -111,3 +111,85 @@ func TestExecuteLineReportsSyntaxErrorPosition(t *testing.T) {
 		t.Fatalf("stderr = %q, want column and caret", errOut.String())
 	}
 }
+
+func TestRunStartupScriptFromEnvironment(t *testing.T) {
+	t.Setenv("GOSH_STARTUP", "echo startup")
+	t.Setenv("GOSH_STARTUP_FILE", filepath.Join(t.TempDir(), "missing-startup"))
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader("exit\n"), &out, &errOut)
+
+	if err := sh.Run(); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(out.String(), "startup") {
+		t.Fatalf("stdout = %q, want startup output", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestPromptShowsStatusAndDuration(t *testing.T) {
+	t.Setenv("GOSH_PROMPT", "{status}:{duration}> ")
+
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &bytes.Buffer{}, &errOut)
+
+	sh.ExecuteLine(`echo "unterminated`)
+	prompt := sh.prompt()
+	if !strings.HasPrefix(prompt, "2:") || !strings.HasSuffix(prompt, "> ") {
+		t.Fatalf("prompt = %q, want status and duration", prompt)
+	}
+}
+
+func TestJobsBuiltinListsBackgroundJobs(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &out, &errOut)
+
+	if !sh.ExecuteLine("cmd /C ping 127.0.0.1 -n 2 > NUL &") {
+		t.Fatal("background command stopped shell")
+	}
+	if !sh.ExecuteLine("jobs") {
+		t.Fatal("jobs stopped shell")
+	}
+	if !strings.Contains(out.String(), "[1]") || !strings.Contains(out.String(), "running") {
+		t.Fatalf("stdout = %q, want running job", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestBgBuiltinReportsRunningJob(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &out, &errOut)
+
+	sh.ExecuteLine("cmd /C ping 127.0.0.1 -n 2 > NUL &")
+	if !sh.ExecuteLine("bg %1") {
+		t.Fatal("bg stopped shell")
+	}
+	if !strings.Contains(out.String(), "already running") {
+		t.Fatalf("stdout = %q, want already running", out.String())
+	}
+}
+
+func TestFgBuiltinWaitsForJob(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &out, &errOut)
+
+	sh.ExecuteLine("cmd /C rem done &")
+	if !sh.ExecuteLine("fg 1") {
+		t.Fatal("fg stopped shell")
+	}
+	if !strings.Contains(out.String(), "[1] done") {
+		t.Fatalf("stdout = %q, want done job", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}

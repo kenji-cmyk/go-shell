@@ -6,7 +6,7 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 
 - Interactive read-eval loop with a current-directory prompt.
 - Command history, arrow-key navigation, and tab completion in interactive mode.
-- Parser for whitespace, double-quoted arguments, and escaped quotes.
+- Parser for whitespace, single and double quotes, escaped spaces, escaped operators, and empty quoted arguments.
 - Built-in commands: `cd`, `pwd`, `exit`, `help`, `echo`, `clear`, and `cls`.
 - External command execution with forwarded `stdin`, `stdout`, and `stderr`.
 - CMD fallback for common Windows shell commands: `dir`, `cls`, `copy`, `del`, and `type`.
@@ -15,9 +15,12 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Environment variable expansion with `$NAME` and `%NAME%`.
 - Configurable prompt using the `GOSH_PROMPT` environment variable.
 - Background jobs with `&`.
+- Job listing and foreground/background commands with `jobs`, `fg`, and `bg`.
 - Wildcard expansion for external command arguments.
 - Syntax errors with column positions and caret hints.
 - Configurable aliases using `GOSH_ALIASES` or an aliases config file.
+- Configurable startup scripts using `GOSH_STARTUP` or `GOSH_STARTUP_FILE`.
+- Prompt status and timing placeholders with `{status}` and `{duration}`.
 - Cross-platform `clear` behavior.
 - Unit tests for parser, built-ins, shell flow, and process execution.
 
@@ -38,14 +41,16 @@ projects> echo "hello world"
 projects> echo "hello" > hello.txt
 projects> type hello.txt | findstr hello
 projects> notepad &
+projects> jobs
+projects> fg 1
 projects> go version
 projects> exit
 ```
 
-Prompt templates can use `{base}` for the current directory name and `{cwd}` for the full current directory:
+Prompt templates can use `{base}`, `{cwd}`, `{status}`, and `{duration}`:
 
 ```powershell
-$env:GOSH_PROMPT = "[{base}]$ "
+$env:GOSH_PROMPT = "[{base} {status} {duration}]$ "
 go run ./cmd/gosh
 ```
 
@@ -61,6 +66,14 @@ Or with a config file at the default user config path for `gosh`, one `name=comm
 ```text
 ll=dir
 gs=git status
+```
+
+Startup commands can be configured inline or through a file:
+
+```powershell
+$env:GOSH_STARTUP = "echo welcome;pwd"
+$env:GOSH_STARTUP_FILE = "C:\Users\you\.config\gosh\startup.gosh"
+go run ./cmd/gosh
 ```
 
 ## Project Structure
@@ -83,6 +96,12 @@ internal/executor external process runner
 
 ## Current Scope
 
-This version intentionally keeps job control small. It supports launching background jobs, but it does not yet include foreground/background switching, signal forwarding, advanced quoting rules, or PowerShell-style object pipelines.
+This version intentionally keeps job control small. It can list jobs and wait on background jobs with `fg`, while `bg` reports already-running jobs; it does not yet include stopped-job resume semantics, signal forwarding, or PowerShell-style object pipelines.
 
+## Roadmap
+
+- Add stopped-job support and real process resume semantics where the OS allows it.
+- Add signal forwarding and Ctrl+C process-group handling.
+- Add script functions and reusable shell variables.
+- Add a small integration test harness for interactive terminal behavior.
 

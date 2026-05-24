@@ -8,14 +8,156 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"go-shell/internal/parser"
 )
 
 type Executor struct {
-	In  io.Reader
-	Out io.Writer
-	Err io.Writer
+	In   io.Reader
+	Out  io.Writer
+	Err  io.Writer
+	Jobs *JobTable
+}
+
+type JobStatus string
+
+const (
+	JobRunning JobStatus = "running"
+	JobDone    JobStatus = "done"
+	JobFailed  JobStatus = "failed"
+)
+
+type Job struct {
+	ID       int
+	Command  string
+	PIDs     []int
+	Status   JobStatus
+	Err      error
+	Started  time.Time
+	Finished time.Time
+	done     chan struct{}
+}
+
+type JobSnapshot struct {
+	ID       int
+	Command  string
+	PIDs     []int
+	Status   JobStatus
+	Err      error
+	Started  time.Time
+	Finished time.Time
+}
+
+type JobTable struct {
+	mu     sync.Mutex
+	nextID int
+	jobs   map[int]*Job
+}
+
+func NewJobTable() *JobTable {
+	return &JobTable{
+		nextID: 1,
+		jobs:   make(map[int]*Job),
+	}
+}
+
+func (t *JobTable) Add(command string, processes []*exec.Cmd) *JobSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	pids := make([]int, 0, len(processes))
+	for _, process := range processes {
+		if process.Process != nil {
+			pids = append(pids, process.Process.Pid)
+		}
+	}
+
+	job := &Job{
+		ID:      t.nextID,
+		Command: command,
+		PIDs:    pids,
+		Status:  JobRunning,
+		Started: time.Now(),
+		done:    make(chan struct{}),
+	}
+	t.jobs[job.ID] = job
+	t.nextID++
+
+	snapshot := job.snapshot()
+	return &snapshot
+}
+
+func (t *JobTable) Complete(id int, err error) {
+	t.mu.Lock()
+	job, ok := t.jobs[id]
+	if !ok {
+		t.mu.Unlock()
+		return
+	}
+	if err != nil {
+		job.Status = JobFailed
+		job.Err = err
+	} else {
+		job.Status = JobDone
+	}
+	job.Finished = time.Now()
+	close(job.done)
+	t.mu.Unlock()
+}
+
+func (t *JobTable) List() []JobSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	jobs := make([]JobSnapshot, 0, len(t.jobs))
+	for _, job := range t.jobs {
+		snapshot := job.snapshot()
+		jobs = append(jobs, snapshot)
+	}
+	return jobs
+}
+
+func (t *JobTable) Get(id int) (JobSnapshot, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	job, ok := t.jobs[id]
+	if !ok {
+		return JobSnapshot{}, false
+	}
+	return job.snapshot(), true
+}
+
+func (t *JobTable) Wait(id int) (JobSnapshot, error) {
+	t.mu.Lock()
+	job, ok := t.jobs[id]
+	if !ok {
+		t.mu.Unlock()
+		return JobSnapshot{}, fmt.Errorf("job %d not found", id)
+	}
+	done := job.done
+	t.mu.Unlock()
+
+	<-done
+	snapshot, ok := t.Get(id)
+	if !ok {
+		return JobSnapshot{}, fmt.Errorf("job %d not found", id)
+	}
+	return snapshot, nil
+}
+
+func (j *Job) snapshot() JobSnapshot {
+	return JobSnapshot{
+		ID:       j.ID,
+		Command:  j.Command,
+		PIDs:     append([]int(nil), j.PIDs...),
+		Status:   j.Status,
+		Err:      j.Err,
+		Started:  j.Started,
+		Finished: j.Finished,
+	}
 }
 
 func (e Executor) Run(cmd parser.Command) error {
@@ -105,17 +247,29 @@ func (e Executor) RunLine(line parser.Line) error {
 	}
 
 	if line.Background {
-		fmt.Fprintf(e.Out, "[background]")
-		for _, process := range processes {
-			if process.Process != nil {
-				fmt.Fprintf(e.Out, " %d", process.Process.Pid)
+		var job *JobSnapshot
+		if e.Jobs != nil {
+			job = e.Jobs.Add(line.Raw, processes)
+			fmt.Fprintf(e.Out, "[%d]", job.ID)
+			for _, pid := range job.PIDs {
+				fmt.Fprintf(e.Out, " %d", pid)
+			}
+		} else {
+			fmt.Fprintf(e.Out, "[background]")
+			for _, process := range processes {
+				if process.Process != nil {
+					fmt.Fprintf(e.Out, " %d", process.Process.Pid)
+				}
 			}
 		}
 		fmt.Fprintln(e.Out)
 
 		go func() {
-			_ = waitProcesses(processes, readers, writers)
+			err := waitProcesses(processes, readers, writers)
 			closeFiles()
+			if e.Jobs != nil && job != nil {
+				e.Jobs.Complete(job.ID, err)
+			}
 		}()
 		return nil
 	}

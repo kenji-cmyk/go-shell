@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chzyer/readline"
 
@@ -25,22 +27,29 @@ type Shell struct {
 	executor       executor.Executor
 	promptTemplate string
 	aliases        map[string]string
+	jobs           *executor.JobTable
+	lastStatus     int
+	lastDuration   time.Duration
+	started        bool
 }
 
 func New(in io.Reader, out io.Writer, errOut io.Writer) *Shell {
 	aliases := loadAliases()
+	jobs := executor.NewJobTable()
 	return &Shell{
 		in:             in,
 		out:            out,
 		err:            errOut,
 		builtins:       builtin.NewRegistry(),
-		executor:       executor.Executor{In: in, Out: out, Err: errOut},
+		executor:       executor.Executor{In: in, Out: out, Err: errOut, Jobs: jobs},
 		promptTemplate: promptFormat(),
 		aliases:        aliases,
+		jobs:           jobs,
 	}
 }
 
 func (s *Shell) Run() error {
+	s.runStartupScripts()
 	if s.isInteractive() {
 		return s.runInteractive()
 	}
@@ -78,7 +87,7 @@ func (s *Shell) runInteractive() error {
 		HistoryFile:       historyFile(),
 		HistoryLimit:      500,
 		HistorySearchFold: true,
-		AutoComplete:      newCompleter(s.builtins.Names(), s.aliasNames()),
+		AutoComplete:      newCompleter(s.commandNames(), s.aliasNames()),
 		Stdin:             readline.NewCancelableStdin(os.Stdin),
 		Stdout:            s.out,
 		Stderr:            s.err,
@@ -108,8 +117,16 @@ func (s *Shell) runInteractive() error {
 }
 
 func (s *Shell) ExecuteLine(line string) bool {
+	start := time.Now()
+	status := 0
+	defer func() {
+		s.lastStatus = status
+		s.lastDuration = time.Since(start)
+	}()
+
 	parsed, err := parser.ParseLine(line)
 	if err != nil {
+		status = 2
 		fmt.Fprintln(s.err, parser.FormatError(line, err))
 		return true
 	}
@@ -118,14 +135,23 @@ func (s *Shell) ExecuteLine(line string) bool {
 	}
 
 	if err := s.expandAliases(&parsed); err != nil {
+		status = 1
 		fmt.Fprintln(s.err, err)
 		return true
 	}
 
 	if len(parsed.Commands) == 1 && !parsed.Background && parsed.InputRedirect == "" {
 		cmd := parsed.Commands[0]
+		if handled, keepRunning := s.runJobCommand(cmd); handled {
+			if !keepRunning {
+				status = 1
+			}
+			return true
+		}
+
 		out, closeOut, err := s.builtinOutput(parsed)
 		if err != nil {
+			status = 1
 			fmt.Fprintln(s.err, err)
 			return true
 		}
@@ -138,6 +164,7 @@ func (s *Shell) ExecuteLine(line string) bool {
 				return false
 			}
 			if err != nil {
+				status = 1
 				fmt.Fprintln(s.err, err)
 			}
 			return true
@@ -145,9 +172,83 @@ func (s *Shell) ExecuteLine(line string) bool {
 	}
 
 	if err := s.executor.RunLine(parsed); err != nil {
+		status = 1
 		fmt.Fprintln(s.err, err)
 	}
 	return true
+}
+
+func (s *Shell) runJobCommand(cmd parser.Command) (bool, bool) {
+	switch strings.ToLower(cmd.Name) {
+	case "jobs":
+		s.printJobs()
+		return true, true
+	case "fg":
+		if len(cmd.Args) != 1 {
+			fmt.Fprintln(s.err, "fg: usage: fg <job-id>")
+			return true, false
+		}
+		id, err := parseJobID(cmd.Args[0])
+		if err != nil {
+			fmt.Fprintln(s.err, err)
+			return true, false
+		}
+		job, err := s.jobs.Wait(id)
+		if err != nil {
+			fmt.Fprintln(s.err, "fg:", err)
+			return true, false
+		}
+		if job.Err != nil {
+			fmt.Fprintln(s.err, "fg:", job.Err)
+			return true, false
+		}
+		fmt.Fprintf(s.out, "[%d] %s %s\n", job.ID, job.Status, job.Command)
+		return true, true
+	case "bg":
+		if len(cmd.Args) != 1 {
+			fmt.Fprintln(s.err, "bg: usage: bg <job-id>")
+			return true, false
+		}
+		id, err := parseJobID(cmd.Args[0])
+		if err != nil {
+			fmt.Fprintln(s.err, err)
+			return true, false
+		}
+		job, ok := s.jobs.Get(id)
+		if !ok {
+			fmt.Fprintf(s.err, "bg: job %d not found\n", id)
+			return true, false
+		}
+		if job.Status == executor.JobRunning {
+			fmt.Fprintf(s.out, "[%d] already running %s\n", job.ID, job.Command)
+		} else {
+			fmt.Fprintf(s.out, "[%d] %s %s\n", job.ID, job.Status, job.Command)
+		}
+		return true, true
+	default:
+		return false, true
+	}
+}
+
+func (s *Shell) printJobs() {
+	jobs := s.jobs.List()
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].ID < jobs[j].ID })
+	for _, job := range jobs {
+		extra := ""
+		if job.Err != nil {
+			extra = ": " + job.Err.Error()
+		}
+		fmt.Fprintf(s.out, "[%d] %-7s %s%s\n", job.ID, job.Status, job.Command, extra)
+	}
+}
+
+func parseJobID(value string) (int, error) {
+	value = strings.TrimPrefix(value, "%")
+	id, err := strconv.Atoi(value)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid job id: %s", value)
+	}
+	return id, nil
 }
 
 func (s *Shell) expandAliases(line *parser.Line) error {
@@ -201,6 +302,8 @@ func (s *Shell) prompt() string {
 
 	prompt := strings.ReplaceAll(s.promptTemplate, "{cwd}", wd)
 	prompt = strings.ReplaceAll(prompt, "{base}", base)
+	prompt = strings.ReplaceAll(prompt, "{status}", strconv.Itoa(s.lastStatus))
+	prompt = strings.ReplaceAll(prompt, "{duration}", formatDuration(s.lastDuration))
 	return prompt
 }
 
@@ -222,7 +325,7 @@ func promptFormat() string {
 	if value := os.Getenv("GOSH_PROMPT"); value != "" {
 		return value
 	}
-	return "{base}> "
+	return "{base} [{status} {duration}]> "
 }
 
 func configDir() string {
@@ -244,6 +347,45 @@ func aliasesFile() string {
 		return value
 	}
 	return filepath.Join(configDir(), "aliases")
+}
+
+func startupFile() string {
+	if value := os.Getenv("GOSH_STARTUP_FILE"); value != "" {
+		return value
+	}
+	return filepath.Join(configDir(), "startup.gosh")
+}
+
+func (s *Shell) runStartupScripts() {
+	if s.started {
+		return
+	}
+	s.started = true
+
+	if inline := os.Getenv("GOSH_STARTUP"); inline != "" {
+		s.runStartupContent(inline)
+	}
+
+	content, err := os.ReadFile(startupFile())
+	if err == nil {
+		s.runStartupContent(string(content))
+	}
+}
+
+func (s *Shell) runStartupContent(content string) {
+	for _, line := range splitStartupLines(content) {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		if !s.ExecuteLine(line) {
+			return
+		}
+	}
+}
+
+func splitStartupLines(content string) []string {
+	content = strings.ReplaceAll(content, ";", "\n")
+	return strings.Split(content, "\n")
 }
 
 func loadAliases() map[string]string {
@@ -275,6 +417,13 @@ func loadAliasPairs(aliases map[string]string, content string, separator string)
 		}
 		aliases[name] = command
 	}
+}
+
+func (s *Shell) commandNames() []string {
+	names := append([]string{}, s.builtins.Names()...)
+	names = append(names, "jobs", "fg", "bg")
+	sort.Strings(names)
+	return names
 }
 
 type completer struct {
@@ -367,4 +516,14 @@ func isCommandPosition(line string) bool {
 		return r == ' ' || r == '\t' || r == '|' || r == '<' || r == '>'
 	})
 	return len(fields) <= 1 && !strings.ContainsAny(trimmed, " <>")
+}
+
+func formatDuration(duration time.Duration) string {
+	if duration <= 0 {
+		return "0ms"
+	}
+	if duration < time.Second {
+		return duration.Truncate(time.Millisecond).String()
+	}
+	return duration.Truncate(100 * time.Millisecond).String()
 }

@@ -59,6 +59,39 @@ func TestParseEscapedQuote(t *testing.T) {
 	}
 }
 
+func TestParseSingleQuotedArgument(t *testing.T) {
+	cmd, err := Parse(`echo 'hello world'`)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	if len(cmd.Args) != 1 || cmd.Args[0] != "hello world" {
+		t.Fatalf("Args = %#v, want [hello world]", cmd.Args)
+	}
+}
+
+func TestParseEscapedSpaceOutsideQuotes(t *testing.T) {
+	cmd, err := Parse(`echo hello\ world`)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	if len(cmd.Args) != 1 || cmd.Args[0] != "hello world" {
+		t.Fatalf("Args = %#v, want escaped space", cmd.Args)
+	}
+}
+
+func TestParseEmptyQuotedArgument(t *testing.T) {
+	cmd, err := Parse(`echo ""`)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	if len(cmd.Args) != 1 || cmd.Args[0] != "" {
+		t.Fatalf("Args = %#v, want one empty argument", cmd.Args)
+	}
+}
+
 func TestParseEmptyInput(t *testing.T) {
 	cmd, err := Parse("   ")
 	if err != nil {

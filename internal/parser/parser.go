@@ -130,8 +130,9 @@ func tokenize(input string) ([]token, error) {
 	var tokens []token
 	var current strings.Builder
 	currentColumn := 0
-	inQuote := false
+	quote := rune(0)
 	escaping := false
+	tokenStarted := false
 
 	runes := []rune(input)
 	for i := 0; i < len(runes); i++ {
@@ -139,25 +140,34 @@ func tokenize(input string) ([]token, error) {
 		column := i + 1
 		switch {
 		case escaping:
-			if inQuote && (r == '"' || r == '\\') {
-				current.WriteRune(r)
-			} else {
-				current.WriteRune('\\')
-				current.WriteRune(r)
-			}
+			current.WriteString(escapeSequence(r, quote))
 			escaping = false
-		case r == '\\' && inQuote:
-			escaping = true
-		case r == '"':
-			if current.Len() == 0 {
+		case r == '\\' && quote != '\'':
+			if currentColumn == 0 {
 				currentColumn = column
 			}
-			inQuote = !inQuote
-		case !inQuote && (r == '|' || r == '<' || r == '>' || r == '&'):
-			if current.Len() > 0 {
+			tokenStarted = true
+			escaping = true
+		case r == '"' || r == '\'':
+			if quote == 0 {
+				if currentColumn == 0 {
+					currentColumn = column
+				}
+				tokenStarted = true
+				quote = r
+				continue
+			}
+			if quote == r {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+		case quote == 0 && (r == '|' || r == '<' || r == '>' || r == '&'):
+			if tokenStarted {
 				tokens = append(tokens, token{value: current.String(), column: currentColumn})
 				current.Reset()
 				currentColumn = 0
+				tokenStarted = false
 			}
 			if r == '>' && i+1 < len(runes) && runes[i+1] == '>' {
 				tokens = append(tokens, token{value: ">>", column: column})
@@ -165,16 +175,18 @@ func tokenize(input string) ([]token, error) {
 			} else {
 				tokens = append(tokens, token{value: string(r), column: column})
 			}
-		case isSpace(r) && !inQuote:
-			if current.Len() > 0 {
+		case isSpace(r) && quote == 0:
+			if tokenStarted {
 				tokens = append(tokens, token{value: current.String(), column: currentColumn})
 				current.Reset()
 				currentColumn = 0
+				tokenStarted = false
 			}
 		default:
-			if current.Len() == 0 && currentColumn == 0 {
+			if currentColumn == 0 {
 				currentColumn = column
 			}
+			tokenStarted = true
 			current.WriteRune(r)
 		}
 	}
@@ -182,10 +194,10 @@ func tokenize(input string) ([]token, error) {
 	if escaping {
 		current.WriteRune('\\')
 	}
-	if inQuote {
+	if quote != 0 {
 		return nil, syntaxError("unclosed quote", currentColumn)
 	}
-	if current.Len() > 0 {
+	if tokenStarted {
 		tokens = append(tokens, token{value: current.String(), column: currentColumn})
 	}
 
@@ -194,6 +206,26 @@ func tokenize(input string) ([]token, error) {
 
 func isSpace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\r' || r == '\n'
+}
+
+func escapeSequence(r rune, quote rune) string {
+	if quote == '"' {
+		switch r {
+		case 'n':
+			return "\n"
+		case 'r':
+			return "\r"
+		case 't':
+			return "\t"
+		default:
+			return string(r)
+		}
+	}
+
+	if quote == 0 && (isSpace(r) || strings.ContainsRune(`|<>&"'\`, r)) {
+		return string(r)
+	}
+	return `\` + string(r)
 }
 
 func isOperator(token string) bool {
