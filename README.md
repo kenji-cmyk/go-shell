@@ -14,6 +14,11 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Input and output redirects with `<`, `>`, and `>>`.
 - Environment variable expansion with `$NAME` and `%NAME%`.
 - Configurable prompt using the `GOSH_PROMPT` environment variable.
+- Background jobs with `&`.
+- Wildcard expansion for external command arguments.
+- Syntax errors with column positions and caret hints.
+- Configurable aliases using `GOSH_ALIASES` or an aliases config file.
+- Cross-platform `clear` behavior.
 - Unit tests for parser, built-ins, shell flow, and process execution.
 
 ## Run
@@ -32,6 +37,7 @@ projects> dir
 projects> echo "hello world"
 projects> echo "hello" > hello.txt
 projects> type hello.txt | findstr hello
+projects> notepad &
 projects> go version
 projects> exit
 ```
@@ -41,6 +47,20 @@ Prompt templates can use `{base}` for the current directory name and `{cwd}` for
 ```powershell
 $env:GOSH_PROMPT = "[{base}]$ "
 go run ./cmd/gosh
+```
+
+Aliases can be configured inline:
+
+```powershell
+$env:GOSH_ALIASES = "ll=dir;gs=git status"
+go run ./cmd/gosh
+```
+
+Or with a config file at the default user config path for `gosh`, one `name=command` pair per line:
+
+```text
+ll=dir
+gs=git status
 ```
 
 ## Project Structure
@@ -63,7 +83,6 @@ internal/executor external process runner
 
 ## Current Scope
 
-This version intentionally keeps job control small. It does not support background jobs, wildcard expansion, advanced quoting rules, or PowerShell-style object pipelines yet.
-
+This version intentionally keeps job control small. It supports launching background jobs, but it does not yet include foreground/background switching, signal forwarding, advanced quoting rules, or PowerShell-style object pipelines.
 
 

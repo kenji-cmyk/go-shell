@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"go-shell/internal/parser"
@@ -22,10 +23,7 @@ func (e Executor) Run(cmd parser.Command) error {
 		return nil
 	}
 
-	process := exec.Command(cmd.Name, cmd.Args...)
-	if shouldFallbackToCMD(cmd.Name) {
-		process = exec.Command("cmd", "/C", cmd.Raw)
-	}
+	process := commandProcess(cmd)
 
 	process.Stdin = e.In
 	process.Stdout = e.Out
@@ -45,23 +43,21 @@ func (e Executor) RunLine(line parser.Line) error {
 	if len(line.Commands) == 0 {
 		return nil
 	}
-	if len(line.Commands) == 1 && line.InputRedirect == "" && line.OutputRedirect == "" {
+	if len(line.Commands) == 1 && line.InputRedirect == "" && line.OutputRedirect == "" && !line.Background {
 		return e.Run(line.Commands[0])
 	}
 
 	var input io.Reader = e.In
 	var output io.Writer = e.Out
-	var inputFile *os.File
-	var outputFile *os.File
+	var closers []io.Closer
 
 	if line.InputRedirect != "" {
 		file, err := os.Open(line.InputRedirect)
 		if err != nil {
 			return fmt.Errorf("open input redirect: %w", err)
 		}
-		defer file.Close()
-		inputFile = file
-		input = inputFile
+		closers = append(closers, file)
+		input = file
 	}
 
 	if line.OutputRedirect != "" {
@@ -73,9 +69,13 @@ func (e Executor) RunLine(line parser.Line) error {
 		if err != nil {
 			return fmt.Errorf("open output redirect: %w", err)
 		}
-		defer file.Close()
-		outputFile = file
-		output = outputFile
+		closers = append(closers, file)
+		output = file
+	}
+	closeFiles := func() {
+		for _, closer := range closers {
+			_ = closer.Close()
+		}
 	}
 
 	processes := make([]*exec.Cmd, len(line.Commands))
@@ -99,10 +99,32 @@ func (e Executor) RunLine(line parser.Line) error {
 
 	for _, process := range processes {
 		if err := process.Start(); err != nil {
+			closeFiles()
 			return commandStartError(process, err)
 		}
 	}
 
+	if line.Background {
+		fmt.Fprintf(e.Out, "[background]")
+		for _, process := range processes {
+			if process.Process != nil {
+				fmt.Fprintf(e.Out, " %d", process.Process.Pid)
+			}
+		}
+		fmt.Fprintln(e.Out)
+
+		go func() {
+			_ = waitProcesses(processes, readers, writers)
+			closeFiles()
+		}()
+		return nil
+	}
+
+	defer closeFiles()
+	return waitProcesses(processes, readers, writers)
+}
+
+func waitProcesses(processes []*exec.Cmd, readers []*io.PipeReader, writers []*io.PipeWriter) error {
 	errs := make(chan error, len(processes))
 	for i, process := range processes {
 		go func(i int, process *exec.Cmd) {
@@ -131,7 +153,7 @@ func commandProcess(cmd parser.Command) *exec.Cmd {
 	if shouldFallbackToCMD(cmd.Name) {
 		return exec.Command("cmd", "/C", cmd.Raw)
 	}
-	return exec.Command(cmd.Name, cmd.Args...)
+	return exec.Command(cmd.Name, expandWildcards(cmd.Args)...)
 }
 
 func commandStartError(process *exec.Cmd, err error) error {
@@ -140,6 +162,24 @@ func commandStartError(process *exec.Cmd, err error) error {
 		return fmt.Errorf("%s: command not found", process.Args[0])
 	}
 	return err
+}
+
+func expandWildcards(args []string) []string {
+	var expanded []string
+	for _, arg := range args {
+		if !strings.ContainsAny(arg, "*?") {
+			expanded = append(expanded, arg)
+			continue
+		}
+
+		matches, err := filepath.Glob(arg)
+		if err != nil || len(matches) == 0 {
+			expanded = append(expanded, arg)
+			continue
+		}
+		expanded = append(expanded, matches...)
+	}
+	return expanded
 }
 
 func shouldFallbackToCMD(name string) bool {

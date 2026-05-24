@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -21,7 +22,26 @@ type Line struct {
 	InputRedirect  string
 	OutputRedirect string
 	AppendOutput   bool
+	Background     bool
 	Raw            string
+}
+
+type SyntaxError struct {
+	Message string
+	Column  int
+}
+
+func (e *SyntaxError) Error() string {
+	return fmt.Sprintf("%v at column %d: %s", ErrInvalidSyntax, e.Column, e.Message)
+}
+
+func (e *SyntaxError) Unwrap() error {
+	return ErrInvalidSyntax
+}
+
+type token struct {
+	value  string
+	column int
 }
 
 func Parse(input string) (Command, error) {
@@ -32,7 +52,7 @@ func Parse(input string) (Command, error) {
 	if len(line.Commands) == 0 {
 		return Command{}, nil
 	}
-	if len(line.Commands) > 1 || line.InputRedirect != "" || line.OutputRedirect != "" {
+	if len(line.Commands) > 1 || line.InputRedirect != "" || line.OutputRedirect != "" || line.Background {
 		return Command{}, fmt.Errorf("%w: expected a single command", ErrInvalidSyntax)
 	}
 	return line.Commands[0], nil
@@ -53,17 +73,18 @@ func ParseLine(input string) (Line, error) {
 	}
 
 	line := Line{Raw: raw}
-	var current []string
+	var current []token
 
 	flushCommand := func() error {
 		if len(current) == 0 {
-			return fmt.Errorf("%w: empty command", ErrInvalidSyntax)
+			return syntaxError("empty command", 1)
 		}
-		expanded := expandTokens(current)
+		values := tokenValues(current)
+		expanded := expandTokens(values)
 		line.Commands = append(line.Commands, Command{
 			Name: expanded[0],
 			Args: expanded[1:],
-			Raw:  strings.Join(current, " "),
+			Raw:  strings.Join(values, " "),
 		})
 		current = nil
 		return nil
@@ -71,24 +92,29 @@ func ParseLine(input string) (Line, error) {
 
 	for i := 0; i < len(tokens); i++ {
 		token := tokens[i]
-		switch token {
+		switch token.value {
 		case "|":
 			if err := flushCommand(); err != nil {
 				return Line{}, err
 			}
 		case "<":
 			i++
-			if i >= len(tokens) || isOperator(tokens[i]) {
-				return Line{}, fmt.Errorf("%w: missing input file", ErrInvalidSyntax)
+			if i >= len(tokens) || isOperator(tokens[i].value) {
+				return Line{}, syntaxError("missing input file", token.column)
 			}
-			line.InputRedirect = expandToken(tokens[i])
+			line.InputRedirect = expandToken(tokens[i].value)
 		case ">", ">>":
 			i++
-			if i >= len(tokens) || isOperator(tokens[i]) {
-				return Line{}, fmt.Errorf("%w: missing output file", ErrInvalidSyntax)
+			if i >= len(tokens) || isOperator(tokens[i].value) {
+				return Line{}, syntaxError("missing output file", token.column)
 			}
-			line.OutputRedirect = expandToken(tokens[i])
-			line.AppendOutput = token == ">>"
+			line.OutputRedirect = expandToken(tokens[i].value)
+			line.AppendOutput = token.value == ">>"
+		case "&":
+			if i != len(tokens)-1 {
+				return Line{}, syntaxError("background marker must be at the end", token.column)
+			}
+			line.Background = true
 		default:
 			current = append(current, token)
 		}
@@ -100,15 +126,17 @@ func ParseLine(input string) (Line, error) {
 	return line, nil
 }
 
-func tokenize(input string) ([]string, error) {
-	var tokens []string
+func tokenize(input string) ([]token, error) {
+	var tokens []token
 	var current strings.Builder
+	currentColumn := 0
 	inQuote := false
 	escaping := false
 
 	runes := []rune(input)
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
+		column := i + 1
 		switch {
 		case escaping:
 			if inQuote && (r == '"' || r == '\\') {
@@ -121,24 +149,32 @@ func tokenize(input string) ([]string, error) {
 		case r == '\\' && inQuote:
 			escaping = true
 		case r == '"':
+			if current.Len() == 0 {
+				currentColumn = column
+			}
 			inQuote = !inQuote
-		case !inQuote && (r == '|' || r == '<' || r == '>'):
+		case !inQuote && (r == '|' || r == '<' || r == '>' || r == '&'):
 			if current.Len() > 0 {
-				tokens = append(tokens, current.String())
+				tokens = append(tokens, token{value: current.String(), column: currentColumn})
 				current.Reset()
+				currentColumn = 0
 			}
 			if r == '>' && i+1 < len(runes) && runes[i+1] == '>' {
-				tokens = append(tokens, ">>")
+				tokens = append(tokens, token{value: ">>", column: column})
 				i++
 			} else {
-				tokens = append(tokens, string(r))
+				tokens = append(tokens, token{value: string(r), column: column})
 			}
 		case isSpace(r) && !inQuote:
 			if current.Len() > 0 {
-				tokens = append(tokens, current.String())
+				tokens = append(tokens, token{value: current.String(), column: currentColumn})
 				current.Reset()
+				currentColumn = 0
 			}
 		default:
+			if current.Len() == 0 && currentColumn == 0 {
+				currentColumn = column
+			}
 			current.WriteRune(r)
 		}
 	}
@@ -147,10 +183,10 @@ func tokenize(input string) ([]string, error) {
 		current.WriteRune('\\')
 	}
 	if inQuote {
-		return nil, ErrUnclosedQuote
+		return nil, syntaxError("unclosed quote", currentColumn)
 	}
 	if current.Len() > 0 {
-		tokens = append(tokens, current.String())
+		tokens = append(tokens, token{value: current.String(), column: currentColumn})
 	}
 
 	return tokens, nil
@@ -161,7 +197,25 @@ func isSpace(r rune) bool {
 }
 
 func isOperator(token string) bool {
-	return token == "|" || token == "<" || token == ">" || token == ">>"
+	return token == "|" || token == "<" || token == ">" || token == ">>" || token == "&"
+}
+
+func syntaxError(message string, column int) error {
+	if column < 1 {
+		column = 1
+	}
+	if message == "unclosed quote" {
+		return fmt.Errorf("%w: %w", ErrUnclosedQuote, &SyntaxError{Message: message, Column: column})
+	}
+	return &SyntaxError{Message: message, Column: column}
+}
+
+func tokenValues(tokens []token) []string {
+	values := make([]string, len(tokens))
+	for i, token := range tokens {
+		values[i] = token.value
+	}
+	return values
 }
 
 func expandTokens(tokens []string) []string {
@@ -195,4 +249,37 @@ func expandWindowsEnv(token string) string {
 		i += end + 1
 	}
 	return out.String()
+}
+
+func FormatError(input string, err error) string {
+	var syntaxErr *SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		return err.Error()
+	}
+
+	column := syntaxErr.Column
+	if column < 1 {
+		column = 1
+	}
+
+	var b strings.Builder
+	b.WriteString(syntaxErr.Error())
+	b.WriteString("\n")
+	b.WriteString(input)
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat(" ", column-1))
+	b.WriteString("^")
+	return b.String()
+}
+
+func QuoteForRaw(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		if strings.ContainsAny(value, " \t|<>&\"") {
+			quoted[i] = strconv.Quote(value)
+		} else {
+			quoted[i] = value
+		}
+	}
+	return strings.Join(quoted, " ")
 }

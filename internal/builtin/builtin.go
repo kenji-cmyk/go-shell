@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -105,10 +104,7 @@ func echo(ctx Context, cmd parser.Command) error {
 }
 
 func clear(ctx Context, cmd parser.Command) error {
-	clear := exec.Command("cmd", "/C", "cls")
-	clear.Stdout = ctx.Out
-	clear.Stderr = ctx.Err
-	return clear.Run()
+	return clearScreen(ctx.Out, ctx.Err)
 }
 
 func ShortWorkingDir() string {

@@ -24,9 +24,11 @@ type Shell struct {
 	builtins       *builtin.Registry
 	executor       executor.Executor
 	promptTemplate string
+	aliases        map[string]string
 }
 
 func New(in io.Reader, out io.Writer, errOut io.Writer) *Shell {
+	aliases := loadAliases()
 	return &Shell{
 		in:             in,
 		out:            out,
@@ -34,6 +36,7 @@ func New(in io.Reader, out io.Writer, errOut io.Writer) *Shell {
 		builtins:       builtin.NewRegistry(),
 		executor:       executor.Executor{In: in, Out: out, Err: errOut},
 		promptTemplate: promptFormat(),
+		aliases:        aliases,
 	}
 }
 
@@ -75,7 +78,7 @@ func (s *Shell) runInteractive() error {
 		HistoryFile:       historyFile(),
 		HistoryLimit:      500,
 		HistorySearchFold: true,
-		AutoComplete:      newCompleter(s.builtins.Names()),
+		AutoComplete:      newCompleter(s.builtins.Names(), s.aliasNames()),
 		Stdin:             readline.NewCancelableStdin(os.Stdin),
 		Stdout:            s.out,
 		Stderr:            s.err,
@@ -107,14 +110,19 @@ func (s *Shell) runInteractive() error {
 func (s *Shell) ExecuteLine(line string) bool {
 	parsed, err := parser.ParseLine(line)
 	if err != nil {
-		fmt.Fprintln(s.err, "parse error:", err)
+		fmt.Fprintln(s.err, parser.FormatError(line, err))
 		return true
 	}
 	if len(parsed.Commands) == 0 {
 		return true
 	}
 
-	if len(parsed.Commands) == 1 {
+	if err := s.expandAliases(&parsed); err != nil {
+		fmt.Fprintln(s.err, err)
+		return true
+	}
+
+	if len(parsed.Commands) == 1 && !parsed.Background && parsed.InputRedirect == "" {
 		cmd := parsed.Commands[0]
 		out, closeOut, err := s.builtinOutput(parsed)
 		if err != nil {
@@ -140,6 +148,29 @@ func (s *Shell) ExecuteLine(line string) bool {
 		fmt.Fprintln(s.err, err)
 	}
 	return true
+}
+
+func (s *Shell) expandAliases(line *parser.Line) error {
+	for i, command := range line.Commands {
+		replacement, ok := s.aliases[strings.ToLower(command.Name)]
+		if !ok {
+			continue
+		}
+
+		aliasLine, err := parser.ParseLine(replacement)
+		if err != nil {
+			return fmt.Errorf("alias %s: %w", command.Name, err)
+		}
+		if len(aliasLine.Commands) != 1 || aliasLine.InputRedirect != "" || aliasLine.OutputRedirect != "" || aliasLine.Background {
+			return fmt.Errorf("alias %s: aliases must expand to one simple command", command.Name)
+		}
+
+		expanded := aliasLine.Commands[0]
+		expanded.Args = append(expanded.Args, command.Args...)
+		expanded.Raw = parser.QuoteForRaw(append([]string{expanded.Name}, expanded.Args...))
+		line.Commands[i] = expanded
+	}
+	return nil
 }
 
 func (s *Shell) builtinOutput(line parser.Line) (io.Writer, func(), error) {
@@ -194,22 +225,65 @@ func promptFormat() string {
 	return "{base}> "
 }
 
-func historyFile() string {
+func configDir() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
-		return filepath.Join(os.TempDir(), "gosh_history")
+		return os.TempDir()
 	}
 	path := filepath.Join(dir, "gosh")
 	_ = os.MkdirAll(path, 0755)
-	return filepath.Join(path, "history")
+	return path
+}
+
+func historyFile() string {
+	return filepath.Join(configDir(), "history")
+}
+
+func aliasesFile() string {
+	if value := os.Getenv("GOSH_ALIASES_FILE"); value != "" {
+		return value
+	}
+	return filepath.Join(configDir(), "aliases")
+}
+
+func loadAliases() map[string]string {
+	aliases := make(map[string]string)
+	loadAliasPairs(aliases, os.Getenv("GOSH_ALIASES"), ";")
+
+	content, err := os.ReadFile(aliasesFile())
+	if err == nil {
+		loadAliasPairs(aliases, string(content), "\n")
+	}
+	return aliases
+}
+
+func loadAliasPairs(aliases map[string]string, content string, separator string) {
+	for _, pair := range strings.Split(content, separator) {
+		pair = strings.TrimSpace(pair)
+		if pair == "" || strings.HasPrefix(pair, "#") {
+			continue
+		}
+
+		name, command, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		name = strings.ToLower(strings.TrimSpace(name))
+		command = strings.TrimSpace(command)
+		if name == "" || command == "" || strings.ContainsAny(name, " \t|<>&") {
+			continue
+		}
+		aliases[name] = command
+	}
 }
 
 type completer struct {
 	builtins []string
+	aliases  []string
 }
 
-func newCompleter(builtins []string) readline.AutoCompleter {
-	return completer{builtins: builtins}
+func newCompleter(builtins []string, aliases []string) readline.AutoCompleter {
+	return completer{builtins: builtins, aliases: aliases}
 }
 
 func (c completer) Do(line []rune, pos int) ([][]rune, int) {
@@ -242,6 +316,9 @@ func (c completer) candidates(prefix string, commandPosition bool) []string {
 		for _, name := range c.builtins {
 			add(name)
 		}
+		for _, name := range c.aliases {
+			add(name)
+		}
 	}
 
 	pattern := prefix + "*"
@@ -258,6 +335,15 @@ func (c completer) candidates(prefix string, commandPosition bool) []string {
 	}
 	sort.Strings(candidates)
 	return candidates
+}
+
+func (s *Shell) aliasNames() []string {
+	names := make([]string, 0, len(s.aliases))
+	for name := range s.aliases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func currentToken(line string) string {

@@ -80,3 +80,34 @@ func TestPromptUsesEnvironmentTemplate(t *testing.T) {
 		t.Fatalf("prompt = %q, want configured template", prompt)
 	}
 }
+
+func TestExecuteLineExpandsAliasFromEnvironment(t *testing.T) {
+	t.Setenv("GOSH_ALIASES", "hi=echo hello")
+	t.Setenv("GOSH_ALIASES_FILE", filepath.Join(t.TempDir(), "missing-aliases"))
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &out, &errOut)
+
+	if !sh.ExecuteLine("hi world") {
+		t.Fatal("alias stopped the shell")
+	}
+	if strings.TrimSpace(out.String()) != "hello world" {
+		t.Fatalf("stdout = %q, want hello world", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestExecuteLineReportsSyntaxErrorPosition(t *testing.T) {
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &bytes.Buffer{}, &errOut)
+
+	if !sh.ExecuteLine(`echo "hello`) {
+		t.Fatal("syntax error stopped the shell")
+	}
+	if !strings.Contains(errOut.String(), "column 6") || !strings.Contains(errOut.String(), "^") {
+		t.Fatalf("stderr = %q, want column and caret", errOut.String())
+	}
+}

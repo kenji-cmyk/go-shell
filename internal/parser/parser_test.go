@@ -2,6 +2,7 @@ package parser
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -120,5 +121,47 @@ func TestParseLineExpandsEnvironmentVariables(t *testing.T) {
 
 	if got := line.Commands[0].Args; len(got) != 2 || got[0] != "expanded" || got[1] != "expanded" {
 		t.Fatalf("Args = %#v, want expanded values", got)
+	}
+}
+
+func TestParseLineBackground(t *testing.T) {
+	line, err := ParseLine(`notepad &`)
+	if err != nil {
+		t.Fatalf("ParseLine returned error: %v", err)
+	}
+
+	if !line.Background {
+		t.Fatal("Background = false, want true")
+	}
+	if len(line.Commands) != 1 || line.Commands[0].Name != "notepad" {
+		t.Fatalf("Commands = %#v, want notepad", line.Commands)
+	}
+}
+
+func TestParseLineBackgroundMustBeAtEnd(t *testing.T) {
+	_, err := ParseLine(`echo one & echo two`)
+	if !errors.Is(err, ErrInvalidSyntax) {
+		t.Fatalf("error = %v, want ErrInvalidSyntax", err)
+	}
+
+	var syntaxErr *SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("error = %T, want SyntaxError", err)
+	}
+	if syntaxErr.Column != 10 {
+		t.Fatalf("column = %d, want 10", syntaxErr.Column)
+	}
+}
+
+func TestFormatErrorShowsCaret(t *testing.T) {
+	input := `echo "hello`
+	_, err := ParseLine(input)
+	if err == nil {
+		t.Fatal("ParseLine returned nil error")
+	}
+
+	formatted := FormatError(input, err)
+	if !strings.Contains(formatted, "column 6") || !strings.Contains(formatted, "^") {
+		t.Fatalf("formatted error = %q, want column and caret", formatted)
 	}
 }

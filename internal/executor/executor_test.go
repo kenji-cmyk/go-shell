@@ -104,3 +104,48 @@ func TestRunLineInputRedirect(t *testing.T) {
 		t.Fatalf("output = %q, want hello", out.String())
 	}
 }
+
+func TestRunExpandsWildcards(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.txt")
+	second := filepath.Join(dir, "second.txt")
+	if err := os.WriteFile(first, []byte("one"), 0644); err != nil {
+		t.Fatalf("WriteFile first returned error: %v", err)
+	}
+	if err := os.WriteFile(second, []byte("two"), 0644); err != nil {
+		t.Fatalf("WriteFile second returned error: %v", err)
+	}
+
+	var out bytes.Buffer
+	exec := Executor{Out: &out, Err: &bytes.Buffer{}}
+	err := exec.Run(parser.Command{
+		Name: "cmd",
+		Args: []string{"/C", "echo", filepath.Join(dir, "*.txt")},
+		Raw:  "cmd /C echo " + filepath.Join(dir, "*.txt"),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, first) || !strings.Contains(output, second) {
+		t.Fatalf("output = %q, want both wildcard matches", output)
+	}
+}
+
+func TestRunLineBackgroundReturnsImmediately(t *testing.T) {
+	var out bytes.Buffer
+	exec := Executor{Out: &out, Err: &bytes.Buffer{}}
+
+	line, err := parser.ParseLine(`cmd /C rem background &`)
+	if err != nil {
+		t.Fatalf("ParseLine returned error: %v", err)
+	}
+
+	if err := exec.RunLine(line); err != nil {
+		t.Fatalf("RunLine returned error: %v", err)
+	}
+	if !strings.Contains(out.String(), "[background]") {
+		t.Fatalf("output = %q, want background job notice", out.String())
+	}
+}
