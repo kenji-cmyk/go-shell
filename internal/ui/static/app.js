@@ -16,14 +16,20 @@ const searchInput = document.querySelector("#searchInput");
 const compactToggle = document.querySelector("#compactToggle");
 const errorToggle = document.querySelector("#errorToggle");
 const autoJobsToggle = document.querySelector("#autoJobsToggle");
+const workspaceNameInput = document.querySelector("#workspaceNameInput");
+const workspaceList = document.querySelector("#workspaceList");
+const streamButton = document.querySelector("#streamButton");
+const streamForm = document.querySelector("#streamForm");
+const streamInput = document.querySelector("#streamInput");
+const stopStreamButton = document.querySelector("#stopStreamButton");
+
+const storageKey = "gosh.workspaces.v1";
 
 const state = {
-  sessionId: newSessionId(),
-  history: [],
+  workspaces: loadWorkspaces(),
+  activeWorkspaceId: "",
+  stream: null,
   historyIndex: -1,
-  count: 0,
-  failed: 0,
-  closed: false,
   settings: {
     compact: false,
     echoErrors: true,
@@ -31,10 +37,17 @@ const state = {
   }
 };
 
+if (state.workspaces.length === 0) {
+  state.workspaces = [createWorkspace("Default")];
+  saveWorkspaces();
+}
+state.activeWorkspaceId = state.workspaces[0].id;
+
 commandForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const command = commandInput.value.trim();
-  if (!command || state.closed) {
+  const workspace = activeWorkspace();
+  if (!command || workspace?.closed) {
     return;
   }
   commandInput.value = "";
@@ -49,6 +62,16 @@ document.querySelector("#sampleButton").addEventListener("click", () => runComma
 document.querySelector("#focusButton").addEventListener("click", () => commandInput.focus());
 document.querySelector("#clearButton").addEventListener("click", clearTerminal);
 document.querySelector("#newSessionButton").addEventListener("click", newSession);
+streamButton.addEventListener("click", startInteractiveStream);
+streamForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await sendStreamInput(streamInput.value + "\n");
+  streamInput.value = "";
+});
+stopStreamButton.addEventListener("click", () => {
+  stopInteractiveStream();
+});
+workspaceNameInput.addEventListener("change", renameActiveWorkspace);
 document.querySelector("#copyHistoryButton").addEventListener("click", copyHistory);
 document.querySelector("#copyHistorySideButton").addEventListener("click", copyHistory);
 document.querySelector("#clearHistoryButton").addEventListener("click", clearHistory);
@@ -91,6 +114,10 @@ errorToggle.addEventListener("change", () => updateSetting("echoErrors", errorTo
 autoJobsToggle.addEventListener("change", () => updateSetting("autoJobs", autoJobsToggle.checked));
 
 async function runCommand(command) {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
   appendEntry(command);
   pushHistory(command);
   setBusy(true);
@@ -100,7 +127,7 @@ async function runCommand(command) {
     const response = await fetch("/api/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: state.sessionId, command })
+      body: JSON.stringify({ sessionId: workspace.sessionId, command })
     });
     const result = await response.json();
     const elapsed = Math.round(performance.now() - start);
@@ -111,9 +138,10 @@ async function runCommand(command) {
     if (state.settings.autoJobs && command !== "jobs" && result.keepRunning !== false) {
       await refreshJobs();
     }
-    state.closed = result.keepRunning === false;
-    sessionStatus.textContent = state.closed ? "exited" : (result.ok ? "ready" : "error");
-    commandInput.disabled = state.closed;
+    workspace.closed = result.keepRunning === false;
+    saveWorkspaces();
+    sessionStatus.textContent = workspace.closed ? "exited" : (result.ok ? "ready" : "error");
+    commandInput.disabled = workspace.closed;
   } catch (error) {
     appendResult({ ok: false, stderr: error.message, keepRunning: true });
     sessionStatus.textContent = "error";
@@ -123,7 +151,7 @@ async function runCommand(command) {
   }
 }
 
-function appendEntry(command) {
+function appendEntry(command, persist = true) {
   const entry = document.createElement("div");
   entry.className = "entry";
   entry.innerHTML = `
@@ -135,6 +163,9 @@ function appendEntry(command) {
   `;
   entry.querySelector(".entry-text").textContent = command;
   terminalOutput.append(entry);
+  if (persist) {
+    rememberTranscript("command", command);
+  }
   scrollTerminal();
 }
 
@@ -147,12 +178,16 @@ function appendResult(result) {
 
   if (result.stdout) {
     entry.append(outputBlock(result.stdout, "stdout"));
+    rememberTranscript("stdout", result.stdout);
   }
   if (state.settings.echoErrors && (result.stderr || result.error)) {
-    entry.append(outputBlock(result.stderr || result.error, "stderr"));
+    const text = result.stderr || result.error;
+    entry.append(outputBlock(text, "stderr"));
+    rememberTranscript("stderr", text);
   }
   if (!result.stdout && !result.stderr && !result.error) {
     entry.append(outputBlock("(no output)", "stdout"));
+    rememberTranscript("stdout", "(no output)");
   }
   scrollTerminal();
 }
@@ -165,6 +200,7 @@ function outputBlock(text, kind) {
 }
 
 function pushHistory(command) {
+  const workspace = activeWorkspace();
   const record = {
     command,
     ok: true,
@@ -172,28 +208,24 @@ function pushHistory(command) {
     stderr: "",
     at: new Date()
   };
-  state.history.push(record);
-  state.historyIndex = state.history.length;
-  state.count += 1;
-  commandCount.textContent = `${state.count} commands`;
-  historyTotal.textContent = String(state.count);
+  workspace.history = [...workspace.history, record];
+  state.historyIndex = workspace.history.length;
+  workspace.count += 1;
+  commandCount.textContent = `${workspace.count} commands`;
+  historyTotal.textContent = String(workspace.count);
 
-  const item = document.createElement("li");
-  item.textContent = command;
-  item.addEventListener("click", () => {
-    commandInput.value = command;
-    commandInput.focus();
-  });
-  historyList.prepend(item);
+  historyList.prepend(historyListItem(command));
+  saveWorkspaces();
   renderHistory();
 }
 
 function moveHistory(direction) {
-  if (state.history.length === 0) {
+  const workspace = activeWorkspace();
+  if (!workspace || workspace.history.length === 0) {
     return;
   }
-  state.historyIndex = Math.max(0, Math.min(state.history.length, state.historyIndex + direction));
-  commandInput.value = state.history[state.historyIndex]?.command || "";
+  state.historyIndex = Math.max(0, Math.min(workspace.history.length, state.historyIndex + direction));
+  commandInput.value = workspace.history[state.historyIndex]?.command || "";
 }
 
 function updateJobs(command, result) {
@@ -251,7 +283,7 @@ async function refreshJobs() {
     const response = await fetch("/api/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: state.sessionId, command: "jobs" })
+      body: JSON.stringify({ sessionId: activeWorkspace()?.sessionId || "default", command: "jobs" })
     });
     const result = await response.json();
     updateJobs("jobs", result);
@@ -261,7 +293,8 @@ async function refreshJobs() {
 }
 
 function updateHistoryResult(command, result) {
-  const record = state.history[state.history.length - 1];
+  const workspace = activeWorkspace();
+  const record = workspace?.history[workspace.history.length - 1];
   if (!record || record.command !== command) {
     return;
   }
@@ -269,16 +302,18 @@ function updateHistoryResult(command, result) {
   record.stdout = result.stdout || "";
   record.stderr = result.stderr || result.error || "";
   if (!record.ok) {
-    state.failed += 1;
+    workspace.failed += 1;
   }
-  historyFailed.textContent = String(state.failed);
+  historyFailed.textContent = String(workspace.failed);
+  saveWorkspaces();
   renderHistory();
 }
 
 function renderHistory() {
+  const workspace = activeWorkspace();
   const query = historyFilterInput.value.toLowerCase();
   historyTable.innerHTML = "";
-  const records = state.history.filter((record) => record.command.toLowerCase().includes(query));
+  const records = (workspace?.history || []).filter((record) => record.command.toLowerCase().includes(query));
   if (records.length === 0) {
     historyTable.innerHTML = '<li class="empty-state">No matching commands.</li>';
     return;
@@ -300,14 +335,19 @@ function renderHistory() {
 }
 
 function clearHistory() {
-  state.history = [];
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  workspace.history = [];
   state.historyIndex = -1;
-  state.count = 0;
-  state.failed = 0;
+  workspace.count = 0;
+  workspace.failed = 0;
   historyList.innerHTML = "";
   historyTotal.textContent = "0";
   historyFailed.textContent = "0";
   commandCount.textContent = "0 commands";
+  saveWorkspaces();
   renderHistory();
 }
 
@@ -337,14 +377,231 @@ function resetSettings() {
 }
 
 function newSession() {
-  state.sessionId = newSessionId();
-  state.closed = false;
+  const workspace = createWorkspace(`Workspace ${state.workspaces.length + 1}`);
+  state.workspaces = [workspace, ...state.workspaces];
+  state.activeWorkspaceId = workspace.id;
+  saveWorkspaces();
+  renderWorkspaces();
+  loadWorkspace(workspace);
+}
+
+function loadWorkspaces() {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map((workspace) => ({
+      id: workspace.id || newSessionId(),
+      sessionId: workspace.sessionId || newSessionId(),
+      name: workspace.name || "Workspace",
+      history: Array.isArray(workspace.history) ? workspace.history : [],
+      count: Number(workspace.count) || 0,
+      failed: Number(workspace.failed) || 0,
+      closed: Boolean(workspace.closed),
+      transcript: Array.isArray(workspace.transcript) ? workspace.transcript : []
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function saveWorkspaces() {
+  localStorage.setItem(storageKey, JSON.stringify(state.workspaces));
+}
+
+function renderWorkspaces() {
+  workspaceList.innerHTML = "";
+  state.workspaces.forEach((workspace) => {
+    const row = document.createElement("div");
+    row.className = `workspace-item ${workspace.id === state.activeWorkspaceId ? "active" : ""}`;
+    row.innerHTML = `
+      <button type="button" class="workspace-open"></button>
+      <button type="button" class="workspace-remove" aria-label="Remove workspace">x</button>
+    `;
+    row.querySelector(".workspace-open").textContent = workspace.name;
+    row.querySelector(".workspace-open").addEventListener("click", () => {
+      state.activeWorkspaceId = workspace.id;
+      renderWorkspaces();
+      loadWorkspace(workspace);
+    });
+    row.querySelector(".workspace-remove").addEventListener("click", () => removeWorkspace(workspace.id));
+    workspaceList.append(row);
+  });
+}
+
+function removeWorkspace(id) {
+  if (state.workspaces.length === 1) {
+    return;
+  }
+  state.workspaces = state.workspaces.filter((workspace) => workspace.id !== id);
+  if (state.activeWorkspaceId === id) {
+    state.activeWorkspaceId = state.workspaces[0].id;
+    loadWorkspace(state.workspaces[0]);
+  }
+  saveWorkspaces();
+  renderWorkspaces();
+}
+
+function renameActiveWorkspace() {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  workspace.name = workspaceNameInput.value.trim() || "Workspace";
+  saveWorkspaces();
+  renderWorkspaces();
+}
+
+function rememberTranscript(kind, text) {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  workspace.transcript = [...workspace.transcript, { kind, text }].slice(-200);
+  saveWorkspaces();
+}
+
+function createWorkspace(name) {
+  return {
+    id: newSessionId(),
+    sessionId: newSessionId(),
+    name,
+    history: [],
+    count: 0,
+    failed: 0,
+    closed: false,
+    transcript: []
+  };
+}
+
+function activeWorkspace() {
+  return state.workspaces.find((workspace) => workspace.id === state.activeWorkspaceId);
+}
+
+function loadWorkspace(workspace) {
   sessionStatus.textContent = "ready";
+  workspaceNameInput.value = workspace.name;
   commandInput.disabled = false;
-  clearTerminal();
-  clearHistory();
+  terminalOutput.innerHTML = "";
+  if (workspace.transcript.length === 0) {
+    appendWelcome("Go Shell UI is connected to the local shell engine.");
+  } else {
+    workspace.transcript.forEach((item) => {
+      if (item.kind === "command") {
+        appendEntry(item.text, false);
+      } else {
+        terminalOutput.append(outputBlock(item.text, item.kind));
+      }
+    });
+  }
+  historyList.innerHTML = "";
+  [...workspace.history].reverse().forEach((record) => historyList.append(historyListItem(record.command)));
+  commandCount.textContent = `${workspace.count} commands`;
+  historyTotal.textContent = String(workspace.count);
+  historyFailed.textContent = String(workspace.failed);
   renderJobs([]);
+  renderHistory();
   commandInput.focus();
+}
+
+function historyListItem(command) {
+  const item = document.createElement("li");
+  item.textContent = command;
+  item.addEventListener("click", () => {
+    commandInput.value = command;
+    commandInput.focus();
+  });
+  return item;
+}
+
+async function startInteractiveStream() {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  if (state.stream) {
+    state.stream.close();
+  }
+  const response = await fetch("/api/pty/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: workspace.sessionId, command: "", cols: 100, rows: 30 })
+  });
+  const result = await response.json();
+  if (!result.ok) {
+    appendEntry("interactive stream", true);
+    appendResult({ ok: false, stderr: result.error, keepRunning: true });
+    return;
+  }
+  appendWelcome(result.pty ? "Interactive PTY stream started." : "Interactive stream started.");
+  const events = new EventSource(`/api/pty/stream?sessionId=${encodeURIComponent(workspace.sessionId)}`);
+  state.stream = events;
+  sessionStatus.textContent = "streaming";
+  events.addEventListener("output", (event) => appendStreamOutput(event.data));
+  events.addEventListener("close", () => {
+    events.close();
+    if (state.stream === events) {
+      state.stream = null;
+      sessionStatus.textContent = "ready";
+    }
+  });
+  events.onerror = () => {
+    events.close();
+    if (state.stream === events) {
+      state.stream = null;
+      sessionStatus.textContent = "error";
+    }
+  };
+  streamInput.focus();
+}
+
+async function sendStreamInput(data) {
+  const workspace = activeWorkspace();
+  if (!workspace || !state.stream || data.trim() === "") {
+    return;
+  }
+  await fetch("/api/pty/input", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: workspace.sessionId, data })
+  });
+}
+
+async function stopInteractiveStream() {
+  const workspace = activeWorkspace();
+  if (state.stream) {
+    state.stream.close();
+    state.stream = null;
+  }
+  if (workspace) {
+    await fetch("/api/pty/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: workspace.sessionId, data: "" })
+    }).catch(() => {});
+  }
+  sessionStatus.textContent = "ready";
+}
+
+function appendStreamOutput(text) {
+  const block = outputBlock(text, "stdout");
+  terminalOutput.append(block);
+  rememberTranscript("stdout", text);
+  scrollTerminal();
+}
+
+function appendWelcome(text) {
+  const line = document.createElement("div");
+  line.className = "welcome-line";
+  line.innerHTML = '<span class="status-chip success">READY</span><span></span>';
+  line.querySelector("span:last-child").textContent = text;
+  terminalOutput.append(line);
+  scrollTerminal();
 }
 
 function newSessionId() {
@@ -355,22 +612,25 @@ function newSessionId() {
 
 function clearTerminal() {
   terminalOutput.innerHTML = "";
-  const line = document.createElement("div");
-  line.className = "welcome-line";
-  line.innerHTML = '<span class="status-chip success">READY</span><span>Terminal cleared.</span>';
-  terminalOutput.append(line);
+  const workspace = activeWorkspace();
+  if (workspace) {
+    workspace.transcript = [];
+    saveWorkspaces();
+  }
+  appendWelcome("Terminal cleared.");
 }
 
 async function copyHistory() {
-  const text = state.history.map((record) => record.command).join("\n");
+  const text = (activeWorkspace()?.history || []).map((record) => record.command).join("\n");
   if (navigator.clipboard && text) {
     await navigator.clipboard.writeText(text);
   }
 }
 
 function setBusy(isBusy) {
+  const workspace = activeWorkspace();
   sessionStatus.textContent = isBusy ? "running" : sessionStatus.textContent;
-  commandInput.disabled = isBusy || state.closed;
+  commandInput.disabled = isBusy || Boolean(workspace?.closed);
 }
 
 function scrollTerminal() {
@@ -378,3 +638,5 @@ function scrollTerminal() {
 }
 
 commandInput.focus();
+renderWorkspaces();
+loadWorkspace(activeWorkspace());

@@ -40,6 +40,11 @@
       </nav>
       <section class="side-section" aria-labelledby="sessionTitle">
         <div class="section-label" id="sessionTitle">Session</div>
+        <label class="workspace-name-field">
+          <span>Workspace</span>
+          <input id="workspaceNameInput" maxlength="40" spellcheck="false">
+        </label>
+        <div class="workspace-list" id="workspaceList" aria-label="Saved workspaces"></div>
         <div class="metric-row"><span>Status</span><strong id="sessionStatus">ready</strong></div>
         <div class="metric-row"><span>Prompt</span><strong>gosh</strong></div>
         <div class="metric-row"><span>Encoding</span><strong>UTF-8</strong></div>
@@ -52,6 +57,7 @@
           <div class="window-controls" aria-hidden="true"><span></span><span></span><span></span></div>
           <div class="tab active"><span aria-hidden="true">&gt;</span><span>~/projects/go-shell</span></div>
           <button class="icon-button small" id="sampleButton" type="button" title="Run sample command" aria-label="Run sample command">R</button>
+          <button class="icon-button small" id="streamButton" type="button" title="Start interactive stream" aria-label="Start interactive stream">I</button>
         </div>
         <div class="terminal-output" id="terminalOutput" role="log" aria-live="polite">
           <div class="welcome-line">
@@ -65,6 +71,11 @@
           <input id="commandInput" autocomplete="off" spellcheck="false" placeholder="Type a command">
           <span class="cursor" aria-hidden="true"></span>
           <button class="run-button" type="submit">Run</button>
+        </form>
+        <form class="stream-line" id="streamForm">
+          <label class="prompt" for="streamInput">pty</label>
+          <input id="streamInput" autocomplete="off" spellcheck="false" placeholder="Interactive stream input">
+          <button class="ghost-button" id="stopStreamButton" type="button">Stop</button>
         </form>
       </section>
 

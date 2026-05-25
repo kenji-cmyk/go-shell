@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -87,6 +89,84 @@ func TestServerKeepsExitedSessionIsolated(t *testing.T) {
 	}
 	if !strings.Contains(newSession.Body.String(), "fresh") {
 		t.Fatalf("fresh session body = %q, want fresh output", newSession.Body.String())
+	}
+}
+
+func TestServerStartsInteractiveStream(t *testing.T) {
+	server, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+
+	command := "printf pty-ready"
+	if runtime.GOOS == "windows" {
+		command = "cmd /C echo pty-ready"
+	}
+	body := `{"sessionId":"stream-tab","command":` + strconv.Quote(command) + `,"cols":80,"rows":24}`
+	request := httptest.NewRequest(http.MethodPost, "/api/pty/start", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", response.Code, response.Body.String())
+	}
+	var payload PTYStartResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if !payload.OK || payload.SessionID != "stream-tab" {
+		t.Fatalf("payload = %#v, want stream-tab start", payload)
+	}
+}
+
+func TestServerStopsInteractiveStream(t *testing.T) {
+	server, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+
+	command := "cmd /C more"
+	if runtime.GOOS != "windows" {
+		command = "cat"
+	}
+	body := `{"sessionId":"stop-stream","command":` + strconv.Quote(command) + `,"cols":80,"rows":24}`
+	request := httptest.NewRequest(http.MethodPost, "/api/pty/start", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("start status = %d, want 200; body = %s", response.Code, response.Body.String())
+	}
+
+	stop := httptest.NewRequest(http.MethodPost, "/api/pty/stop", bytes.NewBufferString(`{"sessionId":"stop-stream"}`))
+	stop.Header.Set("Content-Type", "application/json")
+	stopped := httptest.NewRecorder()
+	server.Handler().ServeHTTP(stopped, stop)
+	if stopped.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, want 200; body = %s", stopped.Code, stopped.Body.String())
+	}
+}
+
+func TestServerRejectsOversizedInteractiveInput(t *testing.T) {
+	server, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+
+	response := executeRequest(t, server, `{"sessionId":"stream-a","command":"echo warmup"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("warmup status = %d, want 200", response.Code)
+	}
+
+	body := `{"sessionId":"missing","data":"` + strings.Repeat("x", maxPTYInputBytes+1) + `"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/pty/input", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
 	}
 }
 

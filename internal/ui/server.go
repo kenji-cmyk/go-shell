@@ -23,6 +23,7 @@ type Server struct {
 	mux      *http.ServeMux
 	mu       sync.Mutex
 	sessions map[string]*Session
+	pty      *PTYManager
 }
 
 type Session struct {
@@ -60,9 +61,15 @@ func NewServer() (*Server, error) {
 	server := &Server{
 		mux:      http.NewServeMux(),
 		sessions: make(map[string]*Session),
+		pty:      NewPTYManager(),
 	}
 	server.mux.Handle("GET /", http.FileServer(http.FS(static)))
 	server.mux.HandleFunc("POST /api/execute", server.handleExecute)
+	server.mux.HandleFunc("POST /api/pty/start", server.handlePTYStart)
+	server.mux.HandleFunc("POST /api/pty/input", server.handlePTYInput)
+	server.mux.HandleFunc("POST /api/pty/resize", server.handlePTYResize)
+	server.mux.HandleFunc("POST /api/pty/stop", server.handlePTYStop)
+	server.mux.HandleFunc("GET /api/pty/stream", server.handlePTYStream)
 	return server, nil
 }
 
@@ -105,18 +112,9 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) session(id string) (*Session, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		id = "default"
-	}
-	if len(id) > 128 {
-		return nil, fmt.Errorf("session id is too large")
-	}
-	for _, r := range id {
-		if r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
-			continue
-		}
-		return nil, fmt.Errorf("session id contains invalid characters")
+	id = normalizeSessionID(id)
+	if err := validateSessionID(id); err != nil {
+		return nil, err
 	}
 
 	s.mu.Lock()
@@ -127,6 +125,91 @@ func (s *Server) session(id string) (*Session, error) {
 		s.sessions[id] = session
 	}
 	return session, nil
+}
+
+func (s *Server) handlePTYStart(w http.ResponseWriter, r *http.Request) {
+	var request PTYStartRequest
+	reader := http.MaxBytesReader(w, r.Body, maxCommandBytes)
+	defer reader.Close()
+
+	if err := json.NewDecoder(reader).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, PTYStartResponse{OK: false, Error: "invalid JSON request"})
+		return
+	}
+
+	stream, err := s.pty.Start(request.SessionID, strings.TrimSpace(request.Command), request.Cols, request.Rows)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, PTYStartResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, PTYStartResponse{OK: true, SessionID: stream.id, PTY: stream.pty})
+}
+
+func (s *Server) handlePTYInput(w http.ResponseWriter, r *http.Request) {
+	var request PTYInputRequest
+	reader := http.MaxBytesReader(w, r.Body, maxPTYInputBytes)
+	defer reader.Close()
+
+	if err := json.NewDecoder(reader).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: "invalid JSON request"})
+		return
+	}
+	if err := s.pty.Write(request.SessionID, request.Data); err != nil {
+		writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, ExecuteResponse{OK: true, KeepRunning: true})
+}
+
+func (s *Server) handlePTYResize(w http.ResponseWriter, r *http.Request) {
+	var request PTYResizeRequest
+	reader := http.MaxBytesReader(w, r.Body, maxCommandBytes)
+	defer reader.Close()
+
+	if err := json.NewDecoder(reader).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: "invalid JSON request"})
+		return
+	}
+	if err := s.pty.Resize(request.SessionID, request.Cols, request.Rows); err != nil {
+		writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, ExecuteResponse{OK: true, KeepRunning: true})
+}
+
+func (s *Server) handlePTYStop(w http.ResponseWriter, r *http.Request) {
+	var request PTYInputRequest
+	reader := http.MaxBytesReader(w, r.Body, maxCommandBytes)
+	defer reader.Close()
+
+	if err := json.NewDecoder(reader).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: "invalid JSON request"})
+		return
+	}
+	if err := s.pty.Stop(request.SessionID); err != nil {
+		writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, ExecuteResponse{OK: true, KeepRunning: false})
+}
+
+func (s *Server) handlePTYStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, ExecuteResponse{OK: false, Error: "streaming is not supported"})
+		return
+	}
+	stream, err := s.pty.Get(r.URL.Query().Get("sessionId"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	streamServerSentEvents(w, flusher, stream.messages, r.Context().Done())
 }
 
 func (s *Session) Execute(command string) ExecuteResponse {
@@ -160,7 +243,28 @@ func (s *Session) Execute(command string) ExecuteResponse {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, value ExecuteResponse) {
+func normalizeSessionID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "default"
+	}
+	return id
+}
+
+func validateSessionID(id string) error {
+	if len(id) > 128 {
+		return fmt.Errorf("session id is too large")
+	}
+	for _, r := range id {
+		if r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+			continue
+		}
+		return fmt.Errorf("session id contains invalid characters")
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)

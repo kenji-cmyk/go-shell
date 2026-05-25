@@ -18,7 +18,8 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Job listing and foreground/background commands with `jobs`, `fg`, and `bg`.
 - Stopped-job state with `stop`, plus `bg`/`fg` resume semantics on OSes that support process suspension.
 - Foreground process signal forwarding for Ctrl+C/process interrupts.
-- Browser UI for local command execution, history, quick commands, and jobs output.
+- Browser UI for local command execution, persistent multi-session workspaces, history, quick commands, and jobs output.
+- Interactive browser stream for long-running terminal programs, with a Linux PTY backend and a cross-platform pipe fallback.
 - Wildcard expansion for external command arguments.
 - Syntax errors with column positions and caret hints.
 - Configurable aliases using `GOSH_ALIASES` or an aliases config file.
@@ -41,7 +42,7 @@ Run the browser UI:
 go run ./cmd/gosh-ui
 ```
 
-Then open `http://127.0.0.1:8090`. The UI provides a local terminal surface backed by the same shell engine, with command history, quick commands, jobs output, job controls, history filtering, and workspace settings.
+Then open `http://127.0.0.1:8090`. The UI provides a local terminal surface backed by the same shell engine, with persistent browser workspaces, command history, quick commands, jobs output, job controls, history filtering, workspace settings, and an interactive stream panel for terminal programs.
 
 Example session:
 
@@ -131,7 +132,11 @@ internal/ui       HTTP UI server and static frontend
 
 This version keeps job control intentionally small. It tracks background jobs, can stop and resume jobs where the host OS supports process suspension, forwards foreground interrupts to child process groups, and includes a browser UI for local command execution. Windows supports foreground interrupt forwarding with console control events, but stopped-job suspension/resume is reported as unsupported because Windows does not expose POSIX-style `SIGSTOP`/`SIGCONT` semantics.
 
+The UI stores workspace metadata, transcripts, and command history in browser `localStorage`, while live shell state remains in the running `gosh-ui` server process. Interactive streaming uses Server-Sent Events plus POSTed input. Linux starts streams through a PTY so full-screen programs can detect a terminal; Windows and other OSes currently use a pipe-backed stream for long-running interactive commands.
+
 ## Roadmap
 
-- Add persistent multi-session workspaces to the UI.
-- Add a PTY-backed interactive stream for full-screen terminal programs.
+- Add native Windows ConPTY support for full-screen browser streams.
+- Persist workspace metadata on the server for multi-browser continuity.
+- Add authenticated remote access mode for non-local UI deployments.
+- Add terminal resize propagation from the browser viewport.
