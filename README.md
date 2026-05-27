@@ -22,6 +22,8 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Interactive browser stream for long-running terminal programs, with a Linux PTY backend and a cross-platform pipe fallback.
 - Native Windows ConPTY browser streams when the host supports the pseudoconsole API, with pipe fallback for older systems.
 - Server-side UI workspace persistence for multi-browser continuity.
+- Per-workspace shell state recovery for cwd, shell variables, functions, prompt status, and prompt timing after `gosh-ui` restarts.
+- Workspace import/export for command history and transcripts.
 - Optional bearer-token protection for UI/API access.
 - Browser terminal resize propagation to active interactive streams.
 - Wildcard expansion for external command arguments.
@@ -151,12 +153,11 @@ internal/ui       HTTP UI server and static frontend
 
 This version keeps job control intentionally small. It tracks background jobs, can stop and resume jobs where the host OS supports process suspension, forwards foreground interrupts to child process groups, and includes a browser UI for local command execution. Windows supports foreground interrupt forwarding with console control events, but stopped-job suspension/resume is reported as unsupported because Windows does not expose POSIX-style `SIGSTOP`/`SIGCONT` semantics.
 
-The UI stores workspace metadata, transcripts, and command history on the `gosh-ui` server, while browser `localStorage` remains a cache/fallback for offline reloads. Live shell state remains in the running server process. Interactive streaming uses Server-Sent Events plus POSTed input. Linux starts streams through a PTY, Windows uses ConPTY when available, and other OSes use a pipe-backed stream for long-running interactive commands. Active browser streams send resize events back to the server.
+The UI stores workspace metadata, transcripts, command history, and recoverable shell state on the `gosh-ui` server, while browser `localStorage` remains a cache/fallback for offline reloads. Recoverable shell state includes cwd, shell variables, one-line functions, prompt status, and prompt timing; live process and background-job state still belongs to the running server process and is not recovered after restart. Interactive streaming uses Server-Sent Events plus POSTed input. Linux starts streams through a PTY, Windows uses ConPTY when available, and other OSes use a pipe-backed stream for long-running interactive commands. Active browser streams send resize events back to the server.
 
 ## Roadmap
 
-- Add per-workspace server-side shell state recovery after `gosh-ui` restarts.
-- Add import/export for workspace transcripts and command history.
 - Add TLS and reverse-proxy deployment documentation for remote UI mode.
 - Add richer terminal protocol handling for colors, cursor movement, and alternate screen buffers.
 - Add integration tests for authenticated browser workflows and interactive resize behavior.
+- Add optional encrypted-at-rest workspace archives for shared machines.

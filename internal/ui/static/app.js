@@ -22,6 +22,9 @@ const streamButton = document.querySelector("#streamButton");
 const streamForm = document.querySelector("#streamForm");
 const streamInput = document.querySelector("#streamInput");
 const stopStreamButton = document.querySelector("#stopStreamButton");
+const exportWorkspacesButton = document.querySelector("#exportWorkspacesButton");
+const importWorkspacesButton = document.querySelector("#importWorkspacesButton");
+const workspaceImportInput = document.querySelector("#workspaceImportInput");
 
 const storageKey = "gosh.workspaces.v1";
 const tokenStorageKey = "gosh.ui.token";
@@ -78,6 +81,9 @@ document.querySelector("#copyHistoryButton").addEventListener("click", copyHisto
 document.querySelector("#copyHistorySideButton").addEventListener("click", copyHistory);
 document.querySelector("#clearHistoryButton").addEventListener("click", clearHistory);
 document.querySelector("#resetSettingsButton").addEventListener("click", resetSettings);
+exportWorkspacesButton.addEventListener("click", exportWorkspaces);
+importWorkspacesButton.addEventListener("click", () => workspaceImportInput.click());
+workspaceImportInput.addEventListener("change", importWorkspaces);
 
 document.querySelectorAll("[data-view-target]").forEach((button) => {
   button.addEventListener("click", () => showView(button.dataset.viewTarget));
@@ -730,6 +736,55 @@ async function copyHistory() {
   const text = (activeWorkspace()?.history || []).map((record) => record.command).join("\n");
   if (navigator.clipboard && text) {
     await navigator.clipboard.writeText(text);
+  }
+}
+
+function exportWorkspaces() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    workspaces: state.workspaces
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `gosh-workspaces-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function importWorkspaces(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) {
+    return;
+  }
+  try {
+    const payload = JSON.parse(await file.text());
+    const imported = Array.isArray(payload) ? payload : payload.workspaces;
+    if (!Array.isArray(imported) || imported.length === 0) {
+      throw new Error("No workspaces found in archive.");
+    }
+    state.workspaces = imported.map((workspace) => ({
+      id: workspace.id || newSessionId(),
+      sessionId: workspace.sessionId || newSessionId(),
+      name: workspace.name || "Workspace",
+      history: Array.isArray(workspace.history) ? workspace.history : [],
+      count: Number(workspace.count) || 0,
+      failed: Number(workspace.failed) || 0,
+      closed: Boolean(workspace.closed),
+      transcript: Array.isArray(workspace.transcript) ? workspace.transcript : []
+    }));
+    state.activeWorkspaceId = state.workspaces[0].id;
+    saveWorkspaces();
+    renderWorkspaces();
+    loadWorkspace(activeWorkspace());
+    appendWelcome("Workspace archive imported.");
+  } catch (error) {
+    appendEntry("import workspaces", true);
+    appendResult({ ok: false, stderr: error.message, keepRunning: true });
   }
 }
 

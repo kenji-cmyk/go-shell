@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"go-shell/internal/shell"
 )
 
 const (
@@ -36,6 +38,7 @@ type WorkspaceRecord struct {
 	Failed     int                `json:"failed"`
 	Closed     bool               `json:"closed"`
 	Transcript []TranscriptRecord `json:"transcript"`
+	ShellState *shell.State       `json:"shellState,omitempty"`
 }
 
 type HistoryRecord struct {
@@ -68,7 +71,10 @@ func (s *WorkspaceStore) Load() (WorkspacePayload, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked()
+}
 
+func (s *WorkspaceStore) loadLocked() (WorkspacePayload, error) {
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return WorkspacePayload{}, nil
@@ -94,8 +100,16 @@ func (s *WorkspaceStore) Save(payload WorkspacePayload) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	existing, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	clean = mergeShellStates(clean, existing)
+	return s.saveLocked(clean)
+}
 
-	data, err := json.MarshalIndent(clean, "", "  ")
+func (s *WorkspaceStore) saveLocked(payload WorkspacePayload) error {
+	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspaces: %w", err)
 	}
@@ -108,6 +122,63 @@ func (s *WorkspaceStore) Save(payload WorkspacePayload) error {
 		return fmt.Errorf("replace workspaces: %w", err)
 	}
 	return nil
+}
+
+func (s *WorkspaceStore) LoadShellState(sessionID string) (*shell.State, error) {
+	sessionID = normalizeSessionID(sessionID)
+	if err := validateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+	payload, err := s.Load()
+	if err != nil {
+		return nil, err
+	}
+	for _, workspace := range payload.Workspaces {
+		if workspace.SessionID == sessionID && workspace.ShellState != nil {
+			state := *workspace.ShellState
+			return &state, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *WorkspaceStore) SaveShellState(sessionID string, state shell.State) error {
+	sessionID = normalizeSessionID(sessionID)
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+	if s.path == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	payload, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range payload.Workspaces {
+		if payload.Workspaces[i].SessionID == sessionID {
+			payload.Workspaces[i].ShellState = &state
+			found = true
+			break
+		}
+	}
+	if !found {
+		payload.Workspaces = append(payload.Workspaces, WorkspaceRecord{
+			ID:         sessionID,
+			SessionID:  sessionID,
+			Name:       "Workspace",
+			ShellState: &state,
+		})
+	}
+	clean, err := sanitizeWorkspacePayload(payload)
+	if err != nil {
+		return err
+	}
+	return s.saveLocked(clean)
 }
 
 func sanitizeWorkspacePayload(payload WorkspacePayload) (WorkspacePayload, error) {
@@ -144,6 +215,26 @@ func sanitizeWorkspacePayload(payload WorkspacePayload) (WorkspacePayload, error
 		clean.Workspaces = append(clean.Workspaces, workspace)
 	}
 	return clean, nil
+}
+
+func mergeShellStates(next WorkspacePayload, existing WorkspacePayload) WorkspacePayload {
+	states := make(map[string]*shell.State)
+	for _, workspace := range existing.Workspaces {
+		if workspace.ShellState == nil {
+			continue
+		}
+		state := *workspace.ShellState
+		states[workspace.SessionID] = &state
+	}
+	for i := range next.Workspaces {
+		if next.Workspaces[i].ShellState != nil {
+			continue
+		}
+		if state, ok := states[next.Workspaces[i].SessionID]; ok {
+			next.Workspaces[i].ShellState = state
+		}
+	}
+	return next
 }
 
 func sanitizeHistory(records []HistoryRecord) []HistoryRecord {

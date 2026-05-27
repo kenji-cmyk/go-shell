@@ -132,6 +132,17 @@
           <button class="ghost-button" id="resetSettingsButton" type="button">Reset</button>
         </div>
         <div class="settings-grid">
+          <div class="setting-row">
+            <span>
+              <strong>Workspace archive</strong>
+              <small>Export or import workspace history and transcripts.</small>
+            </span>
+            <span class="button-group">
+              <button class="ghost-button" id="exportWorkspacesButton" type="button">Export</button>
+              <button class="ghost-button" id="importWorkspacesButton" type="button">Import</button>
+            </span>
+            <input id="workspaceImportInput" type="file" accept="application/json,.json" hidden>
+          </div>
           <label class="setting-row">
             <span>
               <strong>Compact terminal output</strong>

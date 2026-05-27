@@ -21,6 +21,8 @@ var staticFiles embed.FS
 
 const maxCommandBytes = 16 * 1024
 
+var shellProcessMu sync.Mutex
+
 type Server struct {
 	mux        *http.ServeMux
 	mu         sync.Mutex
@@ -35,6 +37,7 @@ type Session struct {
 	out    *safeBuffer
 	err    *safeBuffer
 	shell  *shell.Shell
+	state  shell.State
 	closed bool
 }
 
@@ -102,13 +105,22 @@ func NewServerWithOptions(options ServerOptions) (*Server, error) {
 }
 
 func NewSession() *Session {
+	return newSessionWithState(nil)
+}
+
+func newSessionWithState(state *shell.State) *Session {
 	out := &safeBuffer{}
 	errOut := &safeBuffer{}
-	return &Session{
+	session := &Session{
 		out:   out,
 		err:   errOut,
 		shell: shell.New(strings.NewReader(""), out, errOut),
 	}
+	if state != nil {
+		_ = session.shell.Restore(*state)
+	}
+	session.state = session.shell.Snapshot()
+	return session
 }
 
 func (s *Server) Handler() http.Handler {
@@ -197,6 +209,12 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := session.Execute(request.Command)
+	if response.KeepRunning {
+		if err := s.workspaces.SaveShellState(normalizeSessionID(request.SessionID), session.Snapshot()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, ExecuteResponse{OK: false, KeepRunning: response.KeepRunning, Error: err.Error()})
+			return
+		}
+	}
 	status := http.StatusOK
 	if !response.OK {
 		status = http.StatusBadRequest
@@ -222,7 +240,13 @@ func (s *Server) session(id string) (*Session, error) {
 	defer s.mu.Unlock()
 	session, ok := s.sessions[id]
 	if !ok {
-		session = NewSession()
+		state, err := s.workspaces.LoadShellState(id)
+		if err != nil {
+			return nil, err
+		}
+		shellProcessMu.Lock()
+		session = newSessionWithState(state)
+		shellProcessMu.Unlock()
 		s.sessions[id] = session
 	}
 	return session, nil
@@ -330,7 +354,13 @@ func (s *Session) Execute(command string) ExecuteResponse {
 
 	s.out.Reset()
 	s.err.Reset()
+	shellProcessMu.Lock()
+	defer shellProcessMu.Unlock()
+	if err := s.shell.Restore(s.state); err != nil {
+		return ExecuteResponse{OK: false, KeepRunning: !s.closed, Error: err.Error()}
+	}
 	keepRunning := s.shell.ExecuteLine(command)
+	s.state = s.shell.Snapshot()
 	if !keepRunning {
 		s.closed = true
 	}
@@ -342,6 +372,12 @@ func (s *Session) Execute(command string) ExecuteResponse {
 		Stdout:      s.out.String(),
 		Stderr:      stderr,
 	}
+}
+
+func (s *Session) Snapshot() shell.State {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
 }
 
 func normalizeSessionID(id string) string {

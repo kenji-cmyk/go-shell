@@ -272,6 +272,41 @@ func TestStartupScriptCanDefineFunctionAndVariable(t *testing.T) {
 	}
 }
 
+func TestSnapshotRestoresVariablesFunctionsAndWorkingDirectory(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd returned error: %v", err)
+	}
+
+	dir := t.TempDir()
+	t.Cleanup(func() {
+		_ = os.Chdir(originalWD)
+	})
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	sh := New(strings.NewReader(""), &out, &errOut)
+
+	sh.ExecuteLine("set TARGET=snapshot")
+	sh.ExecuteLine("fn greet = echo hi $TARGET")
+	sh.ExecuteLine("cd " + dir)
+	state := sh.Snapshot()
+
+	restored := New(strings.NewReader(""), &out, &errOut)
+	if err := restored.Restore(state); err != nil {
+		t.Fatalf("Restore returned error: %v", err)
+	}
+	out.Reset()
+	if !restored.ExecuteLine("greet") {
+		t.Fatal("function stopped shell")
+	}
+	if strings.TrimSpace(out.String()) != "hi snapshot" {
+		t.Fatalf("stdout = %q, want restored function and variable", out.String())
+	}
+	if wd, err := os.Getwd(); err != nil || wd != dir {
+		t.Fatalf("working directory = %q, %v; want %q", wd, err, dir)
+	}
+}
+
 func TestStopBuiltinMarksJobStoppedWhenSupported(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer

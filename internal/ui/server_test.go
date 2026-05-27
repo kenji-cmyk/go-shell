@@ -248,6 +248,45 @@ func TestServerAcceptsAuthCookieAfterTokenQuery(t *testing.T) {
 	}
 }
 
+func TestServerRecoversWorkspaceShellStateAfterRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workspaces.json")
+	server, err := NewServerWithOptions(ServerOptions{WorkspacePath: path})
+	if err != nil {
+		t.Fatalf("NewServerWithOptions returned error: %v", err)
+	}
+
+	workspace := `{"workspaces":[{"id":"ws-recover","sessionId":"recover-tab","name":"Recover","history":[],"count":0,"failed":0,"closed":false,"transcript":[]}]}`
+	save := httptest.NewRequest(http.MethodPut, "/api/workspaces", bytes.NewBufferString(workspace))
+	save.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(httptest.NewRecorder(), save)
+
+	for _, command := range []string{"set TARGET=recovered", "fn greet = echo hi $TARGET"} {
+		response := executeRequest(t, server, `{"sessionId":"recover-tab","command":`+strconv.Quote(command)+`}`)
+		if response.Code != http.StatusOK {
+			t.Fatalf("command %q status = %d, want 200; body = %s", command, response.Code, response.Body.String())
+		}
+	}
+	resync := httptest.NewRequest(http.MethodPut, "/api/workspaces", bytes.NewBufferString(workspace))
+	resync.Header.Set("Content-Type", "application/json")
+	resynced := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resynced, resync)
+	if resynced.Code != http.StatusOK {
+		t.Fatalf("resync status = %d, want 200; body = %s", resynced.Code, resynced.Body.String())
+	}
+
+	restarted, err := NewServerWithOptions(ServerOptions{WorkspacePath: path})
+	if err != nil {
+		t.Fatalf("restart server returned error: %v", err)
+	}
+	response := executeRequest(t, restarted, `{"sessionId":"recover-tab","command":"greet"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("recovered command status = %d, want 200; body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "hi recovered") {
+		t.Fatalf("body = %s, want recovered shell state", response.Body.String())
+	}
+}
+
 func TestServerAcceptsInteractiveResize(t *testing.T) {
 	server, err := NewServer()
 	if err != nil {
