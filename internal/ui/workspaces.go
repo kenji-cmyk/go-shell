@@ -21,8 +21,14 @@ const (
 )
 
 type WorkspaceStore struct {
-	mu   sync.Mutex
-	path string
+	mu     sync.Mutex
+	path   string
+	limits WorkspaceLimits
+}
+
+type WorkspaceLimits struct {
+	MaxHistory    int
+	MaxTranscript int
 }
 
 type WorkspacePayload struct {
@@ -55,13 +61,17 @@ type TranscriptRecord struct {
 }
 
 func NewWorkspaceStore(path string) (*WorkspaceStore, error) {
+	return NewWorkspaceStoreWithLimits(path, WorkspaceLimits{})
+}
+
+func NewWorkspaceStoreWithLimits(path string, limits WorkspaceLimits) (*WorkspaceStore, error) {
 	path = strings.TrimSpace(path)
 	if path != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, fmt.Errorf("create workspace store directory: %w", err)
 		}
 	}
-	return &WorkspaceStore{path: path}, nil
+	return &WorkspaceStore{path: path, limits: normalizeWorkspaceLimits(limits)}, nil
 }
 
 func (s *WorkspaceStore) Load() (WorkspacePayload, error) {
@@ -86,11 +96,11 @@ func (s *WorkspaceStore) loadLocked() (WorkspacePayload, error) {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return WorkspacePayload{}, fmt.Errorf("parse workspaces: %w", err)
 	}
-	return sanitizeWorkspacePayload(payload)
+	return s.sanitize(payload)
 }
 
 func (s *WorkspaceStore) Save(payload WorkspacePayload) error {
-	clean, err := sanitizeWorkspacePayload(payload)
+	clean, err := s.sanitize(payload)
 	if err != nil {
 		return err
 	}
@@ -174,7 +184,7 @@ func (s *WorkspaceStore) SaveShellState(sessionID string, state shell.State) err
 			ShellState: &state,
 		})
 	}
-	clean, err := sanitizeWorkspacePayload(payload)
+	clean, err := s.sanitize(payload)
 	if err != nil {
 		return err
 	}
@@ -182,6 +192,14 @@ func (s *WorkspaceStore) SaveShellState(sessionID string, state shell.State) err
 }
 
 func sanitizeWorkspacePayload(payload WorkspacePayload) (WorkspacePayload, error) {
+	return sanitizeWorkspacePayloadWithLimits(payload, normalizeWorkspaceLimits(WorkspaceLimits{}))
+}
+
+func (s *WorkspaceStore) sanitize(payload WorkspacePayload) (WorkspacePayload, error) {
+	return sanitizeWorkspacePayloadWithLimits(payload, s.limits)
+}
+
+func sanitizeWorkspacePayloadWithLimits(payload WorkspacePayload, limits WorkspaceLimits) (WorkspacePayload, error) {
 	if len(payload.Workspaces) > maxPersistedWorkspaces {
 		payload.Workspaces = payload.Workspaces[:maxPersistedWorkspaces]
 	}
@@ -204,8 +222,8 @@ func sanitizeWorkspacePayload(payload WorkspacePayload) (WorkspacePayload, error
 		workspace.ID = id
 		workspace.SessionID = normalizeSessionID(workspace.SessionID)
 		workspace.Name = name
-		workspace.History = sanitizeHistory(workspace.History)
-		workspace.Transcript = sanitizeTranscript(workspace.Transcript)
+		workspace.History = sanitizeHistory(workspace.History, limits.MaxHistory)
+		workspace.Transcript = sanitizeTranscript(workspace.Transcript, limits.MaxTranscript)
 		if workspace.Count < 0 {
 			workspace.Count = 0
 		}
@@ -215,6 +233,16 @@ func sanitizeWorkspacePayload(payload WorkspacePayload) (WorkspacePayload, error
 		clean.Workspaces = append(clean.Workspaces, workspace)
 	}
 	return clean, nil
+}
+
+func normalizeWorkspaceLimits(limits WorkspaceLimits) WorkspaceLimits {
+	if limits.MaxHistory <= 0 {
+		limits.MaxHistory = maxWorkspaceHistory
+	}
+	if limits.MaxTranscript <= 0 {
+		limits.MaxTranscript = maxWorkspaceTranscript
+	}
+	return limits
 }
 
 func mergeShellStates(next WorkspacePayload, existing WorkspacePayload) WorkspacePayload {
@@ -237,9 +265,9 @@ func mergeShellStates(next WorkspacePayload, existing WorkspacePayload) Workspac
 	return next
 }
 
-func sanitizeHistory(records []HistoryRecord) []HistoryRecord {
-	if len(records) > maxWorkspaceHistory {
-		records = records[len(records)-maxWorkspaceHistory:]
+func sanitizeHistory(records []HistoryRecord, maxRecords int) []HistoryRecord {
+	if len(records) > maxRecords {
+		records = records[len(records)-maxRecords:]
 	}
 	clean := make([]HistoryRecord, 0, len(records))
 	for _, record := range records {
@@ -254,9 +282,9 @@ func sanitizeHistory(records []HistoryRecord) []HistoryRecord {
 	return clean
 }
 
-func sanitizeTranscript(records []TranscriptRecord) []TranscriptRecord {
-	if len(records) > maxWorkspaceTranscript {
-		records = records[len(records)-maxWorkspaceTranscript:]
+func sanitizeTranscript(records []TranscriptRecord, maxRecords int) []TranscriptRecord {
+	if len(records) > maxRecords {
+		records = records[len(records)-maxRecords:]
 	}
 	clean := make([]TranscriptRecord, 0, len(records))
 	for _, record := range records {

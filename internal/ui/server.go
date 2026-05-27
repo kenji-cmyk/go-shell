@@ -42,8 +42,10 @@ type Session struct {
 }
 
 type ServerOptions struct {
-	AuthToken     string
-	WorkspacePath string
+	AuthToken              string
+	WorkspacePath          string
+	MaxWorkspaceHistory    int
+	MaxWorkspaceTranscript int
 }
 
 type ExecuteRequest struct {
@@ -80,7 +82,10 @@ func NewServerWithOptions(options ServerOptions) (*Server, error) {
 	if storePath == "" {
 		storePath = defaultWorkspacePath()
 	}
-	store, err := NewWorkspaceStore(storePath)
+	store, err := NewWorkspaceStoreWithLimits(storePath, WorkspaceLimits{
+		MaxHistory:    options.MaxWorkspaceHistory,
+		MaxTranscript: options.MaxWorkspaceTranscript,
+	})
 	if err != nil {
 		return nil, err
 	}

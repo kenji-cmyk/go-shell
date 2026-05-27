@@ -218,6 +218,9 @@ function outputBlock(text, kind) {
 }
 
 function renderTerminalText(text) {
+  if (usesTerminalScreen(text)) {
+    return renderTerminalScreen(text);
+  }
   const fragment = document.createDocumentFragment();
   const state = { classes: [] };
   const normalized = normalizeTerminalControls(text);
@@ -229,6 +232,133 @@ function renderTerminalText(text) {
   }
   appendTerminalSpan(fragment, normalized.slice(index), state.classes);
   return fragment;
+}
+
+function usesTerminalScreen(text) {
+  return /\x1b\[(?:\?[0-9]+[hl]|[0-9;]*[HfABCDJK])/.test(text) || text.includes("\r");
+}
+
+function createTerminalScreen(cols = 120, rows = 80) {
+  return {
+    cols,
+    rows,
+    cursorRow: 0,
+    cursorCol: 0,
+    lines: Array.from({ length: rows }, () => [])
+  };
+}
+
+function renderTerminalScreen(text) {
+  const screen = createTerminalScreen();
+  let index = 0;
+  while (index < text.length) {
+    if (text[index] === "\x1b" && text[index + 1] === "[") {
+      const sequence = readControlSequence(text, index);
+      if (sequence) {
+        applyScreenControl(sequence.params, sequence.command, screen);
+        index = sequence.end;
+        continue;
+      }
+    }
+    writeTerminalCharacter(screen, text[index]);
+    index += 1;
+  }
+  const fragment = document.createDocumentFragment();
+  appendTerminalSpan(fragment, screenText(screen), []);
+  return fragment;
+}
+
+function readControlSequence(text, start) {
+  const match = /^\x1b\[([?0-9;]*)([A-Za-z])/.exec(text.slice(start));
+  if (!match) {
+    return null;
+  }
+  return {
+    params: match[1],
+    command: match[2],
+    end: start + match[0].length
+  };
+}
+
+function applyScreenControl(params, command, screen) {
+  const values = params.replace("?", "").split(";").filter(Boolean).map((value) => Number(value));
+  if (params === "?1049" && (command === "h" || command === "l")) {
+    clearTerminalScreen(screen);
+    return;
+  }
+  if (command === "H" || command === "f") {
+    screen.cursorRow = Math.max(0, Math.min(screen.rows - 1, (values[0] || 1) - 1));
+    screen.cursorCol = Math.max(0, Math.min(screen.cols - 1, (values[1] || 1) - 1));
+    return;
+  }
+  if (command === "A") {
+    moveTerminalCursor(screen, -(values[0] || 1), 0);
+    return;
+  }
+  if (command === "B") {
+    moveTerminalCursor(screen, values[0] || 1, 0);
+    return;
+  }
+  if (command === "C") {
+    moveTerminalCursor(screen, 0, values[0] || 1);
+    return;
+  }
+  if (command === "D") {
+    moveTerminalCursor(screen, 0, -(values[0] || 1));
+    return;
+  }
+  if (command === "J") {
+    clearTerminalScreen(screen);
+    return;
+  }
+  if (command === "K") {
+    screen.lines[screen.cursorRow] = screen.lines[screen.cursorRow].slice(0, screen.cursorCol);
+  }
+}
+
+function moveTerminalCursor(screen, rowDelta, colDelta) {
+  screen.cursorRow = Math.max(0, Math.min(screen.rows - 1, screen.cursorRow + rowDelta));
+  screen.cursorCol = Math.max(0, Math.min(screen.cols - 1, screen.cursorCol + colDelta));
+}
+
+function clearTerminalScreen(screen) {
+  screen.lines = Array.from({ length: screen.rows }, () => []);
+  screen.cursorRow = 0;
+  screen.cursorCol = 0;
+}
+
+function writeTerminalCharacter(screen, character) {
+  if (character === "\n") {
+    screen.cursorRow = Math.min(screen.rows - 1, screen.cursorRow + 1);
+    screen.cursorCol = 0;
+    return;
+  }
+  if (character === "\r") {
+    screen.cursorCol = 0;
+    return;
+  }
+  if (character === "\b") {
+    screen.cursorCol = Math.max(0, screen.cursorCol - 1);
+    return;
+  }
+  const line = screen.lines[screen.cursorRow];
+  while (line.length < screen.cursorCol) {
+    line.push(" ");
+  }
+  line[screen.cursorCol] = character;
+  screen.cursorCol += 1;
+  if (screen.cursorCol >= screen.cols) {
+    screen.cursorCol = 0;
+    screen.cursorRow = Math.min(screen.rows - 1, screen.cursorRow + 1);
+  }
+}
+
+function screenText(screen) {
+  const lines = screen.lines.map((line) => line.join("").replace(/\s+$/g, ""));
+  while (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines.join("\n");
 }
 
 function normalizeTerminalControls(text) {
@@ -920,6 +1050,16 @@ async function decryptWorkspaceArchive(archive, passphrase) {
   const key = await deriveArchiveKey(passphrase, salt);
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encrypted);
   return JSON.parse(new TextDecoder().decode(decrypted));
+}
+
+async function runEncryptedArchiveWorkflowCheck(passphrase = "gosh-workflow-check") {
+  const payload = {
+    exportedAt: "check",
+    workspaces: [createWorkspace("Archive Check")]
+  };
+  const archive = await encryptWorkspaceArchive(payload, passphrase);
+  const restored = await decryptWorkspaceArchive(archive, passphrase);
+  return restored.workspaces?.[0]?.name === "Archive Check";
 }
 
 async function deriveArchiveKey(passphrase, salt) {

@@ -27,7 +27,7 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Optional bearer-token protection for UI/API access.
 - Optional HTTPS serving for remote UI deployments with a local certificate/key pair.
 - Browser terminal resize propagation to active interactive streams.
-- Browser terminal rendering for ANSI colors, text style sequences, clear-screen events, and alternate-screen transitions.
+- Browser terminal rendering for ANSI colors, text style sequences, clear-screen events, alternate-screen transitions, and basic cursor-addressed screen rewrites.
 - Wildcard expansion for external command arguments.
 - Syntax errors with column positions and caret hints.
 - Configurable aliases using `GOSH_ALIASES` or an aliases config file.
@@ -37,6 +37,7 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Prompt status and timing placeholders with `{status}` and `{duration}`.
 - Cross-platform `clear` behavior.
 - Optional encrypted workspace import/export archives using browser-side AES-GCM.
+- Configurable server-side retention limits for workspace history and transcript records.
 - Unit and integration tests for parser, built-ins, shell flow, process execution, and scripted CLI input.
 
 ## Run
@@ -58,6 +59,14 @@ The UI persists workspace metadata on the server. By default it writes to the `g
 ```powershell
 go run ./cmd/gosh-ui -- -workspaces .\workspaces.json
 ```
+
+Retention defaults keep up to 1000 history records and 400 transcript records per workspace. Shared machines can lower those limits with flags or environment variables:
+
+```powershell
+go run ./cmd/gosh-ui -- -max-history 200 -max-transcript 100
+```
+
+The same values can be supplied with `GOSH_UI_MAX_HISTORY` and `GOSH_UI_MAX_TRANSCRIPT`.
 
 For non-local access, require a bearer token with `GOSH_UI_TOKEN` or the `-token` flag:
 
@@ -176,8 +185,10 @@ The UI stores workspace metadata, transcripts, command history, and recoverable 
 
 Workspace archives can be exported as plain JSON or encrypted JSON from the Settings view. Encrypted archives are sealed in the browser with AES-GCM using a passphrase-derived key, so the passphrase is not sent to the server. Losing the passphrase makes the archive unrecoverable.
 
+The static UI includes a browser-callable encrypted archive workflow check (`runEncryptedArchiveWorkflowCheck`) that exercises export encryption and import decryption with the same WebCrypto path used by the controls.
+
 ## Roadmap
 
-- Add fuller terminal emulation for cursor-addressed applications that depend on complex screen rewrites.
-- Add browser-level E2E coverage for encrypted archive import/export.
-- Add configurable retention limits for workspace transcripts on shared machines.
+- Add a dedicated JavaScript test harness for static UI logic so terminal rendering and archive workflows are tested beyond string-presence checks.
+- Add configurable cleanup of idle interactive streams and abandoned workspace sessions.
+- Add import/export compatibility tests across archive versions before changing the encrypted archive format.

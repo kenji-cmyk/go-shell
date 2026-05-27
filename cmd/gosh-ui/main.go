@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 
 	"go-shell/internal/ui"
 )
@@ -15,11 +17,15 @@ func main() {
 	workspaces := flag.String("workspaces", os.Getenv("GOSH_WORKSPACES_FILE"), "workspace metadata JSON file")
 	tlsCert := flag.String("tls-cert", os.Getenv("GOSH_UI_TLS_CERT"), "TLS certificate file for HTTPS")
 	tlsKey := flag.String("tls-key", os.Getenv("GOSH_UI_TLS_KEY"), "TLS private key file for HTTPS")
+	maxHistory := flag.Int("max-history", envInt("GOSH_UI_MAX_HISTORY", 0), "maximum command history records retained per workspace")
+	maxTranscript := flag.Int("max-transcript", envInt("GOSH_UI_MAX_TRANSCRIPT", 0), "maximum transcript records retained per workspace")
 	flag.Parse()
 
 	server, err := ui.NewServerWithOptions(ui.ServerOptions{
-		AuthToken:     *token,
-		WorkspacePath: *workspaces,
+		AuthToken:              *token,
+		WorkspacePath:          *workspaces,
+		MaxWorkspaceHistory:    *maxHistory,
+		MaxWorkspaceTranscript: *maxTranscript,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -47,4 +53,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func envInt(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
 }

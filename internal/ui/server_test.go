@@ -41,7 +41,7 @@ func TestStaticUIIncludesTerminalProtocolHandling(t *testing.T) {
 		t.Fatalf("ReadFile returned error: %v", err)
 	}
 	source := string(data)
-	for _, want := range []string{"renderTerminalText", "parseSGR", "ansi-fg-", "?1049"} {
+	for _, want := range []string{"renderTerminalText", "parseSGR", "ansi-fg-", "?1049", "createTerminalScreen", "moveTerminalCursor"} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("app.js does not contain %q terminal protocol handling", want)
 		}
@@ -69,7 +69,7 @@ func TestStaticUIIncludesEncryptedWorkspaceArchiveSupport(t *testing.T) {
 			t.Fatalf("index.html does not contain %q encrypted archive control", want)
 		}
 	}
-	for _, want := range []string{"encryptWorkspaceArchive", "decryptWorkspaceArchive", "AES-GCM"} {
+	for _, want := range []string{"encryptWorkspaceArchive", "decryptWorkspaceArchive", "runEncryptedArchiveWorkflowCheck", "AES-GCM"} {
 		if !strings.Contains(string(app), want) {
 			t.Fatalf("app.js does not contain %q encrypted archive support", want)
 		}
@@ -240,6 +240,50 @@ func TestServerPersistsWorkspaces(t *testing.T) {
 	}
 	if !strings.Contains(loaded.Body.String(), `"name":"Alpha"`) {
 		t.Fatalf("body = %s, want persisted workspace", loaded.Body.String())
+	}
+}
+
+func TestServerAppliesWorkspaceRetentionLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workspaces.json")
+	server, err := NewServerWithOptions(ServerOptions{
+		WorkspacePath:          path,
+		MaxWorkspaceHistory:    2,
+		MaxWorkspaceTranscript: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithOptions returned error: %v", err)
+	}
+
+	body := `{"workspaces":[{"id":"ws-a","sessionId":"sess-a","name":"Alpha","history":[{"command":"one","ok":true},{"command":"two","ok":true},{"command":"three","ok":true}],"count":3,"failed":0,"closed":false,"transcript":[{"kind":"stdout","text":"old"},{"kind":"stdout","text":"new"}]}]}`
+	save := httptest.NewRequest(http.MethodPut, "/api/workspaces", bytes.NewBufferString(body))
+	save.Header.Set("Content-Type", "application/json")
+	saved := httptest.NewRecorder()
+	server.Handler().ServeHTTP(saved, save)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("save status = %d, want 200; body = %s", saved.Code, saved.Body.String())
+	}
+
+	load := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
+	loaded := httptest.NewRecorder()
+	server.Handler().ServeHTTP(loaded, load)
+	if loaded.Code != http.StatusOK {
+		t.Fatalf("load status = %d, want 200; body = %s", loaded.Code, loaded.Body.String())
+	}
+	var payload WorkspacePayload
+	if err := json.Unmarshal(loaded.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if got := len(payload.Workspaces[0].History); got != 2 {
+		t.Fatalf("history length = %d, want 2", got)
+	}
+	if payload.Workspaces[0].History[0].Command != "two" || payload.Workspaces[0].History[1].Command != "three" {
+		t.Fatalf("history = %#v, want newest two commands", payload.Workspaces[0].History)
+	}
+	if got := len(payload.Workspaces[0].Transcript); got != 1 {
+		t.Fatalf("transcript length = %d, want 1", got)
+	}
+	if payload.Workspaces[0].Transcript[0].Text != "new" {
+		t.Fatalf("transcript = %#v, want newest record", payload.Workspaces[0].Transcript)
 	}
 }
 
