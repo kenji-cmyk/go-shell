@@ -8,6 +8,8 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -20,10 +22,12 @@ var staticFiles embed.FS
 const maxCommandBytes = 16 * 1024
 
 type Server struct {
-	mux      *http.ServeMux
-	mu       sync.Mutex
-	sessions map[string]*Session
-	pty      *PTYManager
+	mux        *http.ServeMux
+	mu         sync.Mutex
+	sessions   map[string]*Session
+	pty        *PTYManager
+	authToken  string
+	workspaces *WorkspaceStore
 }
 
 type Session struct {
@@ -32,6 +36,11 @@ type Session struct {
 	err    *safeBuffer
 	shell  *shell.Shell
 	closed bool
+}
+
+type ServerOptions struct {
+	AuthToken     string
+	WorkspacePath string
 }
 
 type ExecuteRequest struct {
@@ -53,23 +62,42 @@ type safeBuffer struct {
 }
 
 func NewServer() (*Server, error) {
+	return NewServerWithOptions(ServerOptions{
+		AuthToken:     os.Getenv("GOSH_UI_TOKEN"),
+		WorkspacePath: os.Getenv("GOSH_WORKSPACES_FILE"),
+	})
+}
+
+func NewServerWithOptions(options ServerOptions) (*Server, error) {
 	static, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		return nil, fmt.Errorf("load static ui: %w", err)
 	}
+	storePath := strings.TrimSpace(options.WorkspacePath)
+	if storePath == "" {
+		storePath = defaultWorkspacePath()
+	}
+	store, err := NewWorkspaceStore(storePath)
+	if err != nil {
+		return nil, err
+	}
 
 	server := &Server{
-		mux:      http.NewServeMux(),
-		sessions: make(map[string]*Session),
-		pty:      NewPTYManager(),
+		mux:        http.NewServeMux(),
+		sessions:   make(map[string]*Session),
+		pty:        NewPTYManager(),
+		authToken:  strings.TrimSpace(options.AuthToken),
+		workspaces: store,
 	}
-	server.mux.Handle("GET /", http.FileServer(http.FS(static)))
-	server.mux.HandleFunc("POST /api/execute", server.handleExecute)
-	server.mux.HandleFunc("POST /api/pty/start", server.handlePTYStart)
-	server.mux.HandleFunc("POST /api/pty/input", server.handlePTYInput)
-	server.mux.HandleFunc("POST /api/pty/resize", server.handlePTYResize)
-	server.mux.HandleFunc("POST /api/pty/stop", server.handlePTYStop)
-	server.mux.HandleFunc("GET /api/pty/stream", server.handlePTYStream)
+	server.mux.Handle("GET /", server.withAuth(http.FileServer(http.FS(static))))
+	server.mux.Handle("GET /api/workspaces", server.withAuth(http.HandlerFunc(server.handleWorkspaces)))
+	server.mux.Handle("PUT /api/workspaces", server.withAuth(http.HandlerFunc(server.handleWorkspaces)))
+	server.mux.Handle("POST /api/execute", server.withAuth(http.HandlerFunc(server.handleExecute)))
+	server.mux.Handle("POST /api/pty/start", server.withAuth(http.HandlerFunc(server.handlePTYStart)))
+	server.mux.Handle("POST /api/pty/input", server.withAuth(http.HandlerFunc(server.handlePTYInput)))
+	server.mux.Handle("POST /api/pty/resize", server.withAuth(http.HandlerFunc(server.handlePTYResize)))
+	server.mux.Handle("POST /api/pty/stop", server.withAuth(http.HandlerFunc(server.handlePTYStop)))
+	server.mux.Handle("GET /api/pty/stream", server.withAuth(http.HandlerFunc(server.handlePTYStream)))
 	return server, nil
 }
 
@@ -85,6 +113,71 @@ func NewSession() *Session {
 
 func (s *Server) Handler() http.Handler {
 	return s.mux
+}
+
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := requestToken(r)
+		if s.authToken == "" || token == s.authToken {
+			if token == s.authToken && strings.TrimSpace(r.URL.Query().Get("token")) != "" {
+				http.SetCookie(w, &http.Cookie{
+					Name:     "gosh_ui_token",
+					Value:    token,
+					Path:     "/",
+					HttpOnly: true,
+					SameSite: http.SameSiteLaxMode,
+				})
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, ExecuteResponse{OK: false, Error: "unauthorized"})
+	})
+}
+
+func requestToken(r *http.Request) string {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(header), "bearer ") {
+		return strings.TrimSpace(header[7:])
+	}
+	if token := strings.TrimSpace(r.Header.Get("X-Gosh-Token")); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(r.URL.Query().Get("token")); token != "" {
+		return token
+	}
+	cookie, err := r.Cookie("gosh_ui_token")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cookie.Value)
+}
+
+func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		payload, err := s.workspaces.Load()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, ExecuteResponse{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, payload)
+	case http.MethodPut:
+		reader := http.MaxBytesReader(w, r.Body, maxWorkspaceBytes)
+		defer reader.Close()
+		var payload WorkspacePayload
+		if err := json.NewDecoder(reader).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: "invalid JSON request"})
+			return
+		}
+		if err := s.workspaces.Save(payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, ExecuteResponse{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, ExecuteResponse{OK: true})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, ExecuteResponse{OK: false, Error: "method not allowed"})
+	}
 }
 
 func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +202,14 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusBadRequest
 	}
 	writeJSON(w, status, response)
+}
+
+func defaultWorkspacePath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(dir) == "" {
+		return ""
+	}
+	return filepath.Join(dir, "gosh", "workspaces.json")
 }
 
 func (s *Server) session(id string) (*Session, error) {

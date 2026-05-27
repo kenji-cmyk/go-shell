@@ -24,11 +24,13 @@ const streamInput = document.querySelector("#streamInput");
 const stopStreamButton = document.querySelector("#stopStreamButton");
 
 const storageKey = "gosh.workspaces.v1";
+const tokenStorageKey = "gosh.ui.token";
 
 const state = {
   workspaces: loadWorkspaces(),
   activeWorkspaceId: "",
   stream: null,
+  syncTimer: null,
   historyIndex: -1,
   settings: {
     compact: false,
@@ -113,6 +115,9 @@ compactToggle.addEventListener("change", () => updateSetting("compact", compactT
 errorToggle.addEventListener("change", () => updateSetting("echoErrors", errorToggle.checked));
 autoJobsToggle.addEventListener("change", () => updateSetting("autoJobs", autoJobsToggle.checked));
 
+const resizeObserver = new ResizeObserver(() => resizeInteractiveStream());
+resizeObserver.observe(terminalOutput);
+
 async function runCommand(command) {
   const workspace = activeWorkspace();
   if (!workspace) {
@@ -126,7 +131,7 @@ async function runCommand(command) {
   try {
     const response = await fetch("/api/execute", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders(),
       body: JSON.stringify({ sessionId: workspace.sessionId, command })
     });
     const result = await response.json();
@@ -282,7 +287,7 @@ async function refreshJobs() {
   try {
     const response = await fetch("/api/execute", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders(),
       body: JSON.stringify({ sessionId: activeWorkspace()?.sessionId || "default", command: "jobs" })
     });
     const result = await response.json();
@@ -412,6 +417,7 @@ function loadWorkspaces() {
 
 function saveWorkspaces() {
   localStorage.setItem(storageKey, JSON.stringify(state.workspaces));
+  queueWorkspaceSync();
 }
 
 function renderWorkspaces() {
@@ -527,10 +533,11 @@ async function startInteractiveStream() {
   if (state.stream) {
     state.stream.close();
   }
+  const size = terminalSize();
   const response = await fetch("/api/pty/start", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId: workspace.sessionId, command: "", cols: 100, rows: 30 })
+    headers: apiHeaders(),
+    body: JSON.stringify({ sessionId: workspace.sessionId, command: "", cols: size.cols, rows: size.rows })
   });
   const result = await response.json();
   if (!result.ok) {
@@ -539,9 +546,10 @@ async function startInteractiveStream() {
     return;
   }
   appendWelcome(result.pty ? "Interactive PTY stream started." : "Interactive stream started.");
-  const events = new EventSource(`/api/pty/stream?sessionId=${encodeURIComponent(workspace.sessionId)}`);
+  const events = new EventSource(streamURL(workspace.sessionId));
   state.stream = events;
   sessionStatus.textContent = "streaming";
+  resizeInteractiveStream();
   events.addEventListener("output", (event) => appendStreamOutput(event.data));
   events.addEventListener("close", () => {
     events.close();
@@ -567,7 +575,7 @@ async function sendStreamInput(data) {
   }
   await fetch("/api/pty/input", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders(),
     body: JSON.stringify({ sessionId: workspace.sessionId, data })
   });
 }
@@ -581,7 +589,7 @@ async function stopInteractiveStream() {
   if (workspace) {
     await fetch("/api/pty/stop", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders(),
       body: JSON.stringify({ sessionId: workspace.sessionId, data: "" })
     }).catch(() => {});
   }
@@ -608,6 +616,104 @@ function newSessionId() {
   const bytes = new Uint32Array(2);
   crypto.getRandomValues(bytes);
   return `ui-${Date.now().toString(36)}-${bytes[0].toString(36)}${bytes[1].toString(36)}`;
+}
+
+function authToken() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("token") || params.get("access_token");
+  if (token) {
+    localStorage.setItem(tokenStorageKey, token);
+    return token;
+  }
+  return localStorage.getItem(tokenStorageKey) || "";
+}
+
+function apiHeaders() {
+  const headers = { "Content-Type": "application/json" };
+  const token = authToken();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+function streamURL(sessionId) {
+  const params = new URLSearchParams({ sessionId });
+  const token = authToken();
+  if (token) {
+    params.set("token", token);
+  }
+  return `/api/pty/stream?${params.toString()}`;
+}
+
+function queueWorkspaceSync() {
+  clearTimeout(state.syncTimer);
+  state.syncTimer = setTimeout(syncWorkspacesToServer, 250);
+}
+
+async function syncWorkspacesToServer() {
+  try {
+    await fetch("/api/workspaces", {
+      method: "PUT",
+      headers: apiHeaders(),
+      body: JSON.stringify({ workspaces: state.workspaces })
+    });
+  } catch {
+    // localStorage remains the fallback cache when server persistence is unavailable.
+  }
+}
+
+async function hydrateWorkspacesFromServer() {
+  try {
+    const response = await fetch("/api/workspaces", { headers: apiHeaders() });
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json();
+    if (!Array.isArray(payload.workspaces) || payload.workspaces.length === 0) {
+      queueWorkspaceSync();
+      return;
+    }
+    state.workspaces = payload.workspaces.map((workspace) => ({
+      id: workspace.id || newSessionId(),
+      sessionId: workspace.sessionId || newSessionId(),
+      name: workspace.name || "Workspace",
+      history: Array.isArray(workspace.history) ? workspace.history : [],
+      count: Number(workspace.count) || 0,
+      failed: Number(workspace.failed) || 0,
+      closed: Boolean(workspace.closed),
+      transcript: Array.isArray(workspace.transcript) ? workspace.transcript : []
+    }));
+    state.activeWorkspaceId = state.workspaces[0].id;
+    localStorage.setItem(storageKey, JSON.stringify(state.workspaces));
+    renderWorkspaces();
+    loadWorkspace(activeWorkspace());
+  } catch {
+    // The cached browser workspace is already loaded.
+  }
+}
+
+function terminalSize() {
+  const style = window.getComputedStyle(terminalOutput);
+  const width = terminalOutput.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const height = terminalOutput.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+  return {
+    cols: Math.max(20, Math.floor(width / 8)),
+    rows: Math.max(8, Math.floor(height / 18))
+  };
+}
+
+async function resizeInteractiveStream() {
+  const workspace = activeWorkspace();
+  if (!workspace || !state.stream) {
+    return;
+  }
+  const size = terminalSize();
+  await fetch("/api/pty/resize", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({ sessionId: workspace.sessionId, cols: size.cols, rows: size.rows })
+  }).catch(() => {});
 }
 
 function clearTerminal() {
@@ -640,3 +746,4 @@ function scrollTerminal() {
 commandInput.focus();
 renderWorkspaces();
 loadWorkspace(activeWorkspace());
+hydrateWorkspacesFromServer();

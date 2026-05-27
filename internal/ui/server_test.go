@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -167,6 +168,111 @@ func TestServerRejectsOversizedInteractiveInput(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestServerPersistsWorkspaces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workspaces.json")
+	server, err := NewServerWithOptions(ServerOptions{WorkspacePath: path})
+	if err != nil {
+		t.Fatalf("NewServerWithOptions returned error: %v", err)
+	}
+
+	body := `{"workspaces":[{"id":"ws-a","sessionId":"sess-a","name":"Alpha","history":[{"command":"pwd","ok":true}],"count":1,"failed":0,"closed":false,"transcript":[{"kind":"command","text":"pwd"}]}]}`
+	save := httptest.NewRequest(http.MethodPut, "/api/workspaces", bytes.NewBufferString(body))
+	save.Header.Set("Content-Type", "application/json")
+	saved := httptest.NewRecorder()
+	server.Handler().ServeHTTP(saved, save)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("save status = %d, want 200; body = %s", saved.Code, saved.Body.String())
+	}
+
+	reloaded, err := NewServerWithOptions(ServerOptions{WorkspacePath: path})
+	if err != nil {
+		t.Fatalf("reload server returned error: %v", err)
+	}
+	load := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
+	loaded := httptest.NewRecorder()
+	reloaded.Handler().ServeHTTP(loaded, load)
+	if loaded.Code != http.StatusOK {
+		t.Fatalf("load status = %d, want 200; body = %s", loaded.Code, loaded.Body.String())
+	}
+	if !strings.Contains(loaded.Body.String(), `"name":"Alpha"`) {
+		t.Fatalf("body = %s, want persisted workspace", loaded.Body.String())
+	}
+}
+
+func TestServerRejectsUnauthorizedAPIRequests(t *testing.T) {
+	server, err := NewServerWithOptions(ServerOptions{AuthToken: "secret-token"})
+	if err != nil {
+		t.Fatalf("NewServerWithOptions returned error: %v", err)
+	}
+
+	unauthorized := executeRequest(t, server, `{"sessionId":"test-a","command":"echo blocked"}`)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d, want 401", unauthorized.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/execute", bytes.NewBufferString(`{"sessionId":"test-a","command":"echo allowed"}`))
+	request.Header.Set("Authorization", "Bearer secret-token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("authorized status = %d, want 200; body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestServerAcceptsAuthCookieAfterTokenQuery(t *testing.T) {
+	server, err := NewServerWithOptions(ServerOptions{AuthToken: "secret-token"})
+	if err != nil {
+		t.Fatalf("NewServerWithOptions returned error: %v", err)
+	}
+
+	first := httptest.NewRequest(http.MethodGet, "/?token=secret-token", nil)
+	firstResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(firstResponse, first)
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200; body = %s", firstResponse.Code, firstResponse.Body.String())
+	}
+	cookies := firstResponse.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatalf("expected auth cookie")
+	}
+
+	next := httptest.NewRequest(http.MethodGet, "/", nil)
+	next.AddCookie(cookies[0])
+	nextResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(nextResponse, next)
+	if nextResponse.Code != http.StatusOK {
+		t.Fatalf("cookie status = %d, want 200; body = %s", nextResponse.Code, nextResponse.Body.String())
+	}
+}
+
+func TestServerAcceptsInteractiveResize(t *testing.T) {
+	server, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+
+	command := "cmd /C more"
+	if runtime.GOOS != "windows" {
+		command = "cat"
+	}
+	body := `{"sessionId":"resize-stream","command":` + strconv.Quote(command) + `,"cols":80,"rows":24}`
+	request := httptest.NewRequest(http.MethodPost, "/api/pty/start", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("start status = %d, want 200; body = %s", response.Code, response.Body.String())
+	}
+
+	resize := httptest.NewRequest(http.MethodPost, "/api/pty/resize", bytes.NewBufferString(`{"sessionId":"resize-stream","cols":100,"rows":32}`))
+	resize.Header.Set("Content-Type", "application/json")
+	resized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resized, resize)
+	if resized.Code != http.StatusOK {
+		t.Fatalf("resize status = %d, want 200; body = %s", resized.Code, resized.Body.String())
 	}
 }
 

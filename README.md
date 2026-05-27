@@ -20,6 +20,10 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Foreground process signal forwarding for Ctrl+C/process interrupts.
 - Browser UI for local command execution, persistent multi-session workspaces, history, quick commands, and jobs output.
 - Interactive browser stream for long-running terminal programs, with a Linux PTY backend and a cross-platform pipe fallback.
+- Native Windows ConPTY browser streams when the host supports the pseudoconsole API, with pipe fallback for older systems.
+- Server-side UI workspace persistence for multi-browser continuity.
+- Optional bearer-token protection for UI/API access.
+- Browser terminal resize propagation to active interactive streams.
 - Wildcard expansion for external command arguments.
 - Syntax errors with column positions and caret hints.
 - Configurable aliases using `GOSH_ALIASES` or an aliases config file.
@@ -42,7 +46,22 @@ Run the browser UI:
 go run ./cmd/gosh-ui
 ```
 
-Then open `http://127.0.0.1:8090`. The UI provides a local terminal surface backed by the same shell engine, with persistent browser workspaces, command history, quick commands, jobs output, job controls, history filtering, workspace settings, and an interactive stream panel for terminal programs.
+Then open `http://127.0.0.1:8090`. The UI provides a local terminal surface backed by the same shell engine, with persistent workspaces, command history, quick commands, jobs output, job controls, history filtering, workspace settings, and an interactive stream panel for terminal programs.
+
+The UI persists workspace metadata on the server. By default it writes to the `gosh/workspaces.json` file under the current user's config directory. Override that path with `GOSH_WORKSPACES_FILE` or the `-workspaces` flag:
+
+```powershell
+go run ./cmd/gosh-ui -- -workspaces .\workspaces.json
+```
+
+For non-local access, require a bearer token with `GOSH_UI_TOKEN` or the `-token` flag:
+
+```powershell
+$env:GOSH_UI_TOKEN = "change-me"
+go run ./cmd/gosh-ui -- -addr 0.0.0.0:8090
+```
+
+Open the first browser session with `?token=change-me`; the server sets an auth cookie, and the UI also stores the token locally for API calls and interactive streams.
 
 Example session:
 
@@ -132,11 +151,12 @@ internal/ui       HTTP UI server and static frontend
 
 This version keeps job control intentionally small. It tracks background jobs, can stop and resume jobs where the host OS supports process suspension, forwards foreground interrupts to child process groups, and includes a browser UI for local command execution. Windows supports foreground interrupt forwarding with console control events, but stopped-job suspension/resume is reported as unsupported because Windows does not expose POSIX-style `SIGSTOP`/`SIGCONT` semantics.
 
-The UI stores workspace metadata, transcripts, and command history in browser `localStorage`, while live shell state remains in the running `gosh-ui` server process. Interactive streaming uses Server-Sent Events plus POSTed input. Linux starts streams through a PTY so full-screen programs can detect a terminal; Windows and other OSes currently use a pipe-backed stream for long-running interactive commands.
+The UI stores workspace metadata, transcripts, and command history on the `gosh-ui` server, while browser `localStorage` remains a cache/fallback for offline reloads. Live shell state remains in the running server process. Interactive streaming uses Server-Sent Events plus POSTed input. Linux starts streams through a PTY, Windows uses ConPTY when available, and other OSes use a pipe-backed stream for long-running interactive commands. Active browser streams send resize events back to the server.
 
 ## Roadmap
 
-- Add native Windows ConPTY support for full-screen browser streams.
-- Persist workspace metadata on the server for multi-browser continuity.
-- Add authenticated remote access mode for non-local UI deployments.
-- Add terminal resize propagation from the browser viewport.
+- Add per-workspace server-side shell state recovery after `gosh-ui` restarts.
+- Add import/export for workspace transcripts and command history.
+- Add TLS and reverse-proxy deployment documentation for remote UI mode.
+- Add richer terminal protocol handling for colors, cursor movement, and alternate screen buffers.
+- Add integration tests for authenticated browser workflows and interactive resize behavior.
