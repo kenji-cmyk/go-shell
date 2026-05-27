@@ -25,7 +25,9 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - Per-workspace shell state recovery for cwd, shell variables, functions, prompt status, and prompt timing after `gosh-ui` restarts.
 - Workspace import/export for command history and transcripts.
 - Optional bearer-token protection for UI/API access.
+- Optional HTTPS serving for remote UI deployments with a local certificate/key pair.
 - Browser terminal resize propagation to active interactive streams.
+- Browser terminal rendering for ANSI colors, text style sequences, clear-screen events, and alternate-screen transitions.
 - Wildcard expansion for external command arguments.
 - Syntax errors with column positions and caret hints.
 - Configurable aliases using `GOSH_ALIASES` or an aliases config file.
@@ -34,6 +36,7 @@ Go Shell (`gosh`) is a small Windows-friendly shell written in Go. The goal is n
 - One-line script functions with `fn`, `unfn`, and `functions`.
 - Prompt status and timing placeholders with `{status}` and `{duration}`.
 - Cross-platform `clear` behavior.
+- Optional encrypted workspace import/export archives using browser-side AES-GCM.
 - Unit and integration tests for parser, built-ins, shell flow, process execution, and scripted CLI input.
 
 ## Run
@@ -64,6 +67,22 @@ go run ./cmd/gosh-ui -- -addr 0.0.0.0:8090
 ```
 
 Open the first browser session with `?token=change-me`; the server sets an auth cookie, and the UI also stores the token locally for API calls and interactive streams.
+
+For direct HTTPS, provide a certificate and key with flags or environment variables:
+
+```powershell
+go run ./cmd/gosh-ui -- -addr 0.0.0.0:8443 -token change-me -tls-cert .\cert.pem -tls-key .\key.pem
+```
+
+The same values can be supplied with `GOSH_UI_TLS_CERT` and `GOSH_UI_TLS_KEY`.
+
+For reverse-proxy deployments, keep `gosh-ui` bound to loopback and terminate TLS at the proxy:
+
+```text
+client -> https://shell.example.com -> reverse proxy -> http://127.0.0.1:8090
+```
+
+Forward normal HTTP requests and Server-Sent Events without response buffering for `/api/pty/stream`. Keep bearer-token protection enabled when the UI is reachable outside the host, and prefer a firewall or VPN in front of the proxy for shared machines.
 
 Example session:
 
@@ -155,9 +174,10 @@ This version keeps job control intentionally small. It tracks background jobs, c
 
 The UI stores workspace metadata, transcripts, command history, and recoverable shell state on the `gosh-ui` server, while browser `localStorage` remains a cache/fallback for offline reloads. Recoverable shell state includes cwd, shell variables, one-line functions, prompt status, and prompt timing; live process and background-job state still belongs to the running server process and is not recovered after restart. Interactive streaming uses Server-Sent Events plus POSTed input. Linux starts streams through a PTY, Windows uses ConPTY when available, and other OSes use a pipe-backed stream for long-running interactive commands. Active browser streams send resize events back to the server.
 
+Workspace archives can be exported as plain JSON or encrypted JSON from the Settings view. Encrypted archives are sealed in the browser with AES-GCM using a passphrase-derived key, so the passphrase is not sent to the server. Losing the passphrase makes the archive unrecoverable.
+
 ## Roadmap
 
-- Add TLS and reverse-proxy deployment documentation for remote UI mode.
-- Add richer terminal protocol handling for colors, cursor movement, and alternate screen buffers.
-- Add integration tests for authenticated browser workflows and interactive resize behavior.
-- Add optional encrypted-at-rest workspace archives for shared machines.
+- Add fuller terminal emulation for cursor-addressed applications that depend on complex screen rewrites.
+- Add browser-level E2E coverage for encrypted archive import/export.
+- Add configurable retention limits for workspace transcripts on shared machines.

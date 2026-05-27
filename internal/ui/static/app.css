@@ -721,6 +721,35 @@ body.compact-output .terminal-output {
   color: var(--error);
 }
 
+.ansi-bold {
+  font-weight: 700;
+}
+
+.ansi-dim {
+  opacity: 0.72;
+}
+
+.ansi-underline {
+  text-decoration: underline;
+}
+
+.ansi-fg-30 { color: #2c3440; }
+.ansi-fg-31 { color: #ff6b6b; }
+.ansi-fg-32 { color: #00e639; }
+.ansi-fg-33 { color: #ffb000; }
+.ansi-fg-34 { color: #5cd4ff; }
+.ansi-fg-35 { color: #d8a7ff; }
+.ansi-fg-36 { color: #64e8df; }
+.ansi-fg-37 { color: #e1e1ef; }
+.ansi-fg-90 { color: #879399; }
+.ansi-fg-91 { color: #ffb4ab; }
+.ansi-fg-92 { color: #79f2a6; }
+.ansi-fg-93 { color: #ffd166; }
+.ansi-fg-94 { color: #94ccff; }
+.ansi-fg-95 { color: #f0b3ff; }
+.ansi-fg-96 { color: #9ff3ec; }
+.ansi-fg-97 { color: #ffffff; }
+
 .command-line,
 .stream-line {
   display: grid;

@@ -24,10 +24,14 @@ const streamInput = document.querySelector("#streamInput");
 const stopStreamButton = document.querySelector("#stopStreamButton");
 const exportWorkspacesButton = document.querySelector("#exportWorkspacesButton");
 const importWorkspacesButton = document.querySelector("#importWorkspacesButton");
+const exportEncryptedWorkspacesButton = document.querySelector("#exportEncryptedWorkspacesButton");
+const importEncryptedWorkspacesButton = document.querySelector("#importEncryptedWorkspacesButton");
 const workspaceImportInput = document.querySelector("#workspaceImportInput");
+const workspaceEncryptedImportInput = document.querySelector("#workspaceEncryptedImportInput");
 
 const storageKey = "gosh.workspaces.v1";
 const tokenStorageKey = "gosh.ui.token";
+const encryptedArchiveVersion = 1;
 
 const state = {
   workspaces: loadWorkspaces(),
@@ -84,6 +88,9 @@ document.querySelector("#resetSettingsButton").addEventListener("click", resetSe
 exportWorkspacesButton.addEventListener("click", exportWorkspaces);
 importWorkspacesButton.addEventListener("click", () => workspaceImportInput.click());
 workspaceImportInput.addEventListener("change", importWorkspaces);
+exportEncryptedWorkspacesButton.addEventListener("click", exportEncryptedWorkspaces);
+importEncryptedWorkspacesButton.addEventListener("click", () => workspaceEncryptedImportInput.click());
+workspaceEncryptedImportInput.addEventListener("change", importEncryptedWorkspaces);
 
 document.querySelectorAll("[data-view-target]").forEach((button) => {
   button.addEventListener("click", () => showView(button.dataset.viewTarget));
@@ -206,8 +213,91 @@ function appendResult(result) {
 function outputBlock(text, kind) {
   const block = document.createElement("pre");
   block.className = `entry-output ${kind}`;
-  block.textContent = text.trimEnd();
+  block.append(renderTerminalText(text.trimEnd()));
   return block;
+}
+
+function renderTerminalText(text) {
+  const fragment = document.createDocumentFragment();
+  const state = { classes: [] };
+  const normalized = normalizeTerminalControls(text);
+  let index = 0;
+  for (const match of normalized.matchAll(/\x1b\[([?0-9;]*)([A-Za-z])/g)) {
+    appendTerminalSpan(fragment, normalized.slice(index, match.index), state.classes);
+    applyControlSequence(match[1], match[2], state);
+    index = match.index + match[0].length;
+  }
+  appendTerminalSpan(fragment, normalized.slice(index), state.classes);
+  return fragment;
+}
+
+function normalizeTerminalControls(text) {
+  return text
+    .replace(/\x1b\[\?1049[hl]/g, "\n")
+    .replace(/\x1bc/g, "\n")
+    .replace(/\r([^\n])/g, "\n$1")
+    .replace(/\x1b\[[0-9;]*[JK]/g, "\n");
+}
+
+function applyControlSequence(params, command, state) {
+  if (command !== "m") {
+    return;
+  }
+  state.classes = parseSGR(params, state.classes);
+}
+
+function parseSGR(params, currentClasses) {
+  const codes = params === "" ? [0] : params.split(";").map((value) => Number(value || "0"));
+  let classes = [...currentClasses];
+  codes.forEach((code) => {
+    if (code === 0) {
+      classes = [];
+      return;
+    }
+    if (code === 1) {
+      classes = upsertClass(classes, "ansi-bold");
+      return;
+    }
+    if (code === 2) {
+      classes = upsertClass(classes, "ansi-dim");
+      return;
+    }
+    if (code === 4) {
+      classes = upsertClass(classes, "ansi-underline");
+      return;
+    }
+    if (code === 22) {
+      classes = classes.filter((value) => value !== "ansi-bold" && value !== "ansi-dim");
+      return;
+    }
+    if (code === 24) {
+      classes = classes.filter((value) => value !== "ansi-underline");
+      return;
+    }
+    if (code === 39) {
+      classes = classes.filter((value) => !value.startsWith("ansi-fg-"));
+      return;
+    }
+    if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
+      classes = classes.filter((value) => !value.startsWith("ansi-fg-"));
+      classes.push(`ansi-fg-${code}`);
+    }
+  });
+  return classes;
+}
+
+function upsertClass(classes, className) {
+  return classes.includes(className) ? classes : [...classes, className];
+}
+
+function appendTerminalSpan(fragment, text, classes) {
+  if (!text) {
+    return;
+  }
+  const span = document.createElement("span");
+  span.className = classes.join(" ");
+  span.textContent = text;
+  fragment.append(span);
 }
 
 function pushHistory(command) {
@@ -744,15 +834,43 @@ function exportWorkspaces() {
     exportedAt: new Date().toISOString(),
     workspaces: state.workspaces
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `gosh-workspaces-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  downloadWorkspaceArchive(payload, "gosh-workspaces", "json");
+}
+
+async function exportEncryptedWorkspaces() {
+  const passphrase = window.prompt("Archive passphrase");
+  if (!passphrase) {
+    return;
+  }
+  try {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      workspaces: state.workspaces
+    };
+    const archive = await encryptWorkspaceArchive(payload, passphrase);
+    downloadWorkspaceArchive(archive, "gosh-workspaces-encrypted", "json");
+  } catch (error) {
+    appendEntry("encrypt workspaces", true);
+    appendResult({ ok: false, stderr: error.message, keepRunning: true });
+  }
+}
+
+async function encryptWorkspaceArchive(payload, passphrase) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveArchiveKey(passphrase, salt);
+  const encoded = new TextEncoder().encode(JSON.stringify(payload));
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
+  return {
+    format: "gosh-workspace-archive",
+    version: encryptedArchiveVersion,
+    kdf: "PBKDF2-SHA-256",
+    iterations: 250000,
+    cipher: "AES-GCM",
+    salt: base64Encode(salt),
+    iv: base64Encode(iv),
+    data: base64Encode(new Uint8Array(encrypted))
+  };
 }
 
 async function importWorkspaces(event) {
@@ -763,29 +881,112 @@ async function importWorkspaces(event) {
   }
   try {
     const payload = JSON.parse(await file.text());
-    const imported = Array.isArray(payload) ? payload : payload.workspaces;
-    if (!Array.isArray(imported) || imported.length === 0) {
-      throw new Error("No workspaces found in archive.");
-    }
-    state.workspaces = imported.map((workspace) => ({
-      id: workspace.id || newSessionId(),
-      sessionId: workspace.sessionId || newSessionId(),
-      name: workspace.name || "Workspace",
-      history: Array.isArray(workspace.history) ? workspace.history : [],
-      count: Number(workspace.count) || 0,
-      failed: Number(workspace.failed) || 0,
-      closed: Boolean(workspace.closed),
-      transcript: Array.isArray(workspace.transcript) ? workspace.transcript : []
-    }));
-    state.activeWorkspaceId = state.workspaces[0].id;
-    saveWorkspaces();
-    renderWorkspaces();
-    loadWorkspace(activeWorkspace());
+    replaceWorkspacesFromArchive(payload);
     appendWelcome("Workspace archive imported.");
   } catch (error) {
     appendEntry("import workspaces", true);
     appendResult({ ok: false, stderr: error.message, keepRunning: true });
   }
+}
+
+async function importEncryptedWorkspaces(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) {
+    return;
+  }
+  const passphrase = window.prompt("Archive passphrase");
+  if (!passphrase) {
+    return;
+  }
+  try {
+    const archive = JSON.parse(await file.text());
+    const payload = await decryptWorkspaceArchive(archive, passphrase);
+    replaceWorkspacesFromArchive(payload);
+    appendWelcome("Encrypted workspace archive imported.");
+  } catch (error) {
+    appendEntry("decrypt workspaces", true);
+    appendResult({ ok: false, stderr: error.message, keepRunning: true });
+  }
+}
+
+async function decryptWorkspaceArchive(archive, passphrase) {
+  if (archive?.format !== "gosh-workspace-archive" || archive.version !== encryptedArchiveVersion) {
+    throw new Error("Unsupported encrypted workspace archive.");
+  }
+  const salt = base64Decode(archive.salt);
+  const iv = base64Decode(archive.iv);
+  const encrypted = base64Decode(archive.data);
+  const key = await deriveArchiveKey(passphrase, salt);
+  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encrypted);
+  return JSON.parse(new TextDecoder().decode(decrypted));
+}
+
+async function deriveArchiveKey(passphrase, salt) {
+  const material = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(passphrase),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 250000, hash: "SHA-256" },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+function replaceWorkspacesFromArchive(payload) {
+  const imported = Array.isArray(payload) ? payload : payload.workspaces;
+  if (!Array.isArray(imported) || imported.length === 0) {
+    throw new Error("No workspaces found in archive.");
+  }
+  state.workspaces = imported.map((workspace) => ({
+    id: workspace.id || newSessionId(),
+    sessionId: workspace.sessionId || newSessionId(),
+    name: workspace.name || "Workspace",
+    history: Array.isArray(workspace.history) ? workspace.history : [],
+    count: Number(workspace.count) || 0,
+    failed: Number(workspace.failed) || 0,
+    closed: Boolean(workspace.closed),
+    transcript: Array.isArray(workspace.transcript) ? workspace.transcript : []
+  }));
+  state.activeWorkspaceId = state.workspaces[0].id;
+  saveWorkspaces();
+  renderWorkspaces();
+  loadWorkspace(activeWorkspace());
+}
+
+function downloadWorkspaceArchive(payload, name, extension) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${name}-${new Date().toISOString().slice(0, 10)}.${extension}`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function base64Encode(bytes) {
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+}
+
+function base64Decode(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 function setBusy(isBusy) {

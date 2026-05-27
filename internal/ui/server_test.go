@@ -35,6 +35,47 @@ func TestServerServesIndex(t *testing.T) {
 	}
 }
 
+func TestStaticUIIncludesTerminalProtocolHandling(t *testing.T) {
+	data, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	source := string(data)
+	for _, want := range []string{"renderTerminalText", "parseSGR", "ansi-fg-", "?1049"} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("app.js does not contain %q terminal protocol handling", want)
+		}
+	}
+	styles, err := staticFiles.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatalf("ReadFile CSS returned error: %v", err)
+	}
+	if !strings.Contains(string(styles), "ansi-fg-32") {
+		t.Fatalf("app.css does not contain ANSI color styles")
+	}
+}
+
+func TestStaticUIIncludesEncryptedWorkspaceArchiveSupport(t *testing.T) {
+	index, err := staticFiles.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatalf("ReadFile index returned error: %v", err)
+	}
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("ReadFile app returned error: %v", err)
+	}
+	for _, want := range []string{"exportEncryptedWorkspacesButton", "importEncryptedWorkspacesButton"} {
+		if !strings.Contains(string(index), want) {
+			t.Fatalf("index.html does not contain %q encrypted archive control", want)
+		}
+	}
+	for _, want := range []string{"encryptWorkspaceArchive", "decryptWorkspaceArchive", "AES-GCM"} {
+		if !strings.Contains(string(app), want) {
+			t.Fatalf("app.js does not contain %q encrypted archive support", want)
+		}
+	}
+}
+
 func TestServerExecutesCommand(t *testing.T) {
 	server, err := NewServer()
 	if err != nil {
